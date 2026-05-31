@@ -11,8 +11,11 @@ research_output/
 # Release ZIPs
 releases/
 
-# RAW Data (large ZIP files)
-RAW Data/
+# RAW Data — exclude large files, keep samples
+RAW Data/DOME580mm/
+RAW Data/Coil230426V1.zip
+RAW Data/Cylinder solid.zip Titanium
+RAW Data/cylinder hollow.zip Titanium
 
 # Logs and temp
 *.log

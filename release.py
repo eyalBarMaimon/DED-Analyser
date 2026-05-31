@@ -24,6 +24,14 @@ INCLUDE_FILES = [
     "hero.html",
     "VERSION",
     "DED Analyser-Heat map.bat",
+    "README.md",
+    "Procfile",
+]
+
+# Sample RAW Data files to include (small enough for distribution)
+INCLUDE_RAW_DATA = [
+    "RAW Data/VAZA  SST 316L.zip",
+    "RAW Data/tower SST316L.zip",
 ]
 
 INCLUDE_DIRS = [
@@ -69,6 +77,14 @@ def main():
             if p.exists():
                 zf.write(p, name)
                 count += 1
+
+        for name in INCLUDE_RAW_DATA:
+            p = ROOT / name
+            if p.exists():
+                zf.write(p, name)
+                count += 1
+            else:
+                print(f"  (skipped missing: {name})")
 
         for dir_name in INCLUDE_DIRS:
             d = ROOT / dir_name
