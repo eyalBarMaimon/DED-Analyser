@@ -13,20 +13,36 @@ Analyses RAPID toolpath code, runs FEM thermal simulation, and visualises residu
 
 ### Installation
 
-1. Download and extract `DED-Analyser-Heat-map-v1.0.1.zip`
-2. Open a terminal / command prompt in the extracted folder
-3. Install dependencies:
+**Step 1 — Install Python 3.10+**  
+Download and install from [python.org](https://www.python.org/downloads/).  
+During installation on Windows, check **"Add Python to PATH"**.
+
+**Step 2 — Download the release**  
+Download `DED-Analyser-Heat-map-v1.0.2.zip` from:  
+https://github.com/eyalBarMaimon/DED-Analyser/releases/tag/v1.0.2
+
+**Step 3 — Extract the ZIP**  
+Unzip to any folder on your computer.
+
+**Step 4 — Open a terminal in the folder**  
+- Windows: right-click inside the folder → "Open in Terminal"  
+- Mac/Linux: `cd` to the folder in your terminal
+
+**Step 5 — Install dependencies (once only)**
 ```
 pip install flask flask-cors numpy
 ```
-4. Start the server:
+
+**Step 6 — Start the server**
 ```
 python app.py
 ```
-5. Open your browser at: **http://localhost:5050/ded**
+
+**Step 7 — Open the app**  
+Open your browser at: **http://localhost:5050/ded**
 
 ### Windows shortcut
-Double-click **`DED Analyser-Heat map.bat`** — it installs nothing extra but requires Python to be on your PATH.
+Double-click **`DED Analyser-Heat map.bat`** — starts the server and opens the browser automatically.
 
 ---
 
