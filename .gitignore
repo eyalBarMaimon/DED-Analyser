@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+.pytest_cache/
+
+# App outputs (generated files)
+outputs/
+research_output/
+
+# Release ZIPs
+releases/
+
+# RAW Data (large ZIP files)
+RAW Data/
+
+# Logs and temp
+*.log
+*.tmp
+app_run*.log
+server.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets / local config
+settings.json
+
+# Temp files from editor
+*.tmp.*
+
+# Claude internal
+.claude/
+
+# Archive large files
+Archive/*.zip
+Archive/*.jpeg
+Archive/*.jpg
+Archive/*.png

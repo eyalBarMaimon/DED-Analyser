@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Meltio DED Analyser — Select Platform</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:       #070d1a;
+  --surface:  #0d1629;
+  --surface2: #111e36;
+  --border:   #1e2e4a;
+  --accent:   #3b82f6;
+  --accent2:  #60a5fa;
+  --warn:     #f59e0b;
+  --success:  #10b981;
+  --text:     #f1f5f9;
+  --text2:    #94a3b8;
+  --muted:    #475569;
+  --robot:    #3b82f6;
+  --m600:     #f59e0b;
+  --glow-robot: rgba(59,130,246,.18);
+  --glow-m600:  rgba(245,158,11,.18);
+}
+
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, 'Segoe UI', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Background grid ───────────────────────────────────────────── */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(59,130,246,.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(59,130,246,.04) 1px, transparent 1px);
+  background-size: 48px 48px;
+  pointer-events: none;
+}
+
+/* ── Layout ────────────────────────────────────────────────────── */
+.hero {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 24px;
+  position: relative;
+}
+
+/* ── Header ─────────────────────────────────────────────────────── */
+.hero-header {
+  text-align: center;
+  margin-bottom: 64px;
+}
+
+.logo-ring {
+  width: 72px;
+  height: 72px;
+  margin: 0 auto 24px;
+  border-radius: 50%;
+  background: var(--surface2);
+  border: 2px solid var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 32px rgba(59,130,246,.25), 0 0 64px rgba(59,130,246,.08);
+  animation: pulse-ring 3s ease-in-out infinite;
+}
+
+@keyframes pulse-ring {
+  0%, 100% { box-shadow: 0 0 32px rgba(59,130,246,.25), 0 0 64px rgba(59,130,246,.08); }
+  50%       { box-shadow: 0 0 48px rgba(59,130,246,.40), 0 0 96px rgba(59,130,246,.15); }
+}
+
+.hero-eyebrow {
+  font-size: .75rem;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: var(--accent2);
+  margin-bottom: 12px;
+  font-weight: 600;
+}
+
+.hero-title {
+  font-size: clamp(2rem, 5vw, 3.2rem);
+  font-weight: 800;
+  letter-spacing: -.04em;
+  background: linear-gradient(135deg, #f1f5f9 30%, #60a5fa);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin-bottom: 16px;
+  line-height: 1.15;
+}
+
+.hero-sub {
+  font-size: 1.05rem;
+  color: var(--text2);
+  max-width: 480px;
+  margin: 0 auto;
+  line-height: 1.6;
+}
+
+/* ── Platform cards ─────────────────────────────────────────────── */
+.platform-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 28px;
+  max-width: 860px;
+  width: 100%;
+}
+
+@media (max-width: 620px) {
+  .platform-grid { grid-template-columns: 1fr; }
+}
+
+.platform-card {
+  position: relative;
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  border-radius: 20px;
+  padding: 40px 36px 36px;
+  cursor: pointer;
+  text-decoration: none;
+  display: block;
+  transition: transform .25s cubic-bezier(.34,1.56,.64,1),
+              border-color .25s ease,
+              box-shadow .25s ease;
+  overflow: hidden;
+}
+
+.platform-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 20px;
+  opacity: 0;
+  transition: opacity .25s ease;
+}
+
+.platform-card.robot::before  { background: radial-gradient(ellipse at top left, var(--glow-robot), transparent 60%); }
+.platform-card.m600::before   { background: radial-gradient(ellipse at top left, var(--glow-m600), transparent 60%); }
+
+.platform-card:hover {
+  transform: translateY(-6px) scale(1.01);
+}
+
+.platform-card.robot:hover {
+  border-color: var(--robot);
+  box-shadow: 0 20px 60px rgba(59,130,246,.18), 0 4px 16px rgba(59,130,246,.12);
+}
+
+.platform-card.robot:hover::before { opacity: 1; }
+
+.platform-card.m600:hover {
+  border-color: var(--m600);
+  box-shadow: 0 20px 60px rgba(245,158,11,.18), 0 4px 16px rgba(245,158,11,.12);
+}
+
+.platform-card.m600:hover::before { opacity: 1; }
+
+/* Badge */
+.platform-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: .7rem;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  padding: 4px 10px;
+  border-radius: 99px;
+  margin-bottom: 24px;
+}
+
+.robot .platform-badge  { background: rgba(59,130,246,.15); color: var(--robot); border: 1px solid rgba(59,130,246,.3); }
+.m600  .platform-badge  { background: rgba(245,158,11,.15); color: var(--m600);  border: 1px solid rgba(245,158,11,.3); }
+
+/* Icon */
+.platform-icon {
+  width: 56px;
+  height: 56px;
+  margin-bottom: 20px;
+  position: relative;
+  z-index: 1;
+}
+
+/* Title */
+.platform-name {
+  font-size: 1.6rem;
+  font-weight: 800;
+  letter-spacing: -.03em;
+  margin-bottom: 8px;
+  position: relative;
+  z-index: 1;
+}
+
+.robot .platform-name { color: #e0eeff; }
+.m600  .platform-name { color: #fff4dc; }
+
+/* Subtitle */
+.platform-tagline {
+  font-size: .9rem;
+  color: var(--text2);
+  margin-bottom: 24px;
+  line-height: 1.5;
+  position: relative;
+  z-index: 1;
+}
+
+/* Feature list */
+.platform-features {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 32px;
+  position: relative;
+  z-index: 1;
+}
+
+.platform-features li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: .82rem;
+  color: var(--text2);
+}
+
+.feat-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.robot .feat-dot { background: var(--robot); }
+.m600  .feat-dot { background: var(--m600);  }
+
+/* CTA button */
+.platform-cta {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 13px 28px;
+  border-radius: 10px;
+  font-size: .9rem;
+  font-weight: 700;
+  letter-spacing: .01em;
+  transition: filter .2s;
+  position: relative;
+  z-index: 1;
+}
+
+.robot .platform-cta {
+  background: linear-gradient(135deg, #2563eb, #3b82f6);
+  color: #fff;
+  box-shadow: 0 4px 16px rgba(59,130,246,.3);
+}
+
+.m600 .platform-cta {
+  background: linear-gradient(135deg, #d97706, #f59e0b);
+  color: #1c0e00;
+  box-shadow: 0 4px 16px rgba(245,158,11,.3);
+}
+
+.platform-card:hover .platform-cta {
+  filter: brightness(1.1);
+}
+
+/* Arrow */
+.cta-arrow {
+  transition: transform .2s;
+}
+
+.platform-card:hover .cta-arrow {
+  transform: translateX(4px);
+}
+
+/* "New" pill on M600 */
+.new-pill {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  background: linear-gradient(135deg, #d97706, #f59e0b);
+  color: #1c0e00;
+  font-size: .62rem;
+  font-weight: 800;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: 99px;
+  z-index: 2;
+}
+
+/* ── Footer ─────────────────────────────────────────────────────── */
+.hero-footer {
+  margin-top: 56px;
+  text-align: center;
+  font-size: .78rem;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.hero-footer a {
+  color: var(--text2);
+  text-decoration: none;
+}
+
+.hero-footer a:hover {
+  color: var(--accent2);
+}
+
+/* Divider */
+.card-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 20px 0;
+  position: relative;
+  z-index: 1;
+}
+</style>
+</head>
+<body>
+
+<div class="hero">
+
+  <!-- Header -->
+  <div class="hero-header">
+    <div class="logo-ring">
+      <!-- laser DED icon -->
+      <svg width="34" height="34" fill="none" stroke="var(--accent)" stroke-width="1.8" viewBox="0 0 24 24">
+        <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+        <path d="M2 17l10 5 10-5"/>
+        <path d="M2 12l10 5 10-5"/>
+      </svg>
+    </div>
+    <div class="hero-eyebrow">Meltio Wire-Fed Laser DED</div>
+    <h1 class="hero-title">DED Analyser</h1>
+    <p class="hero-sub">
+      Thermal simulation, residual stress prediction and process intelligence
+      for wire-laser metal additive manufacturing.
+    </p>
+  </div>
+
+  <!-- Platform selection -->
+  <div class="platform-grid">
+
+    <!-- ── Robot card ── -->
+    <a href="/robot" class="platform-card robot">
+      <!-- Icon -->
+      <div class="platform-icon">
+        <svg width="56" height="56" fill="none" viewBox="0 0 56 56">
+          <rect width="56" height="56" rx="14" fill="rgba(59,130,246,.1)" stroke="rgba(59,130,246,.3)" stroke-width="1.5"/>
+          <!-- robot arm -->
+          <path d="M14 42 Q14 28 20 22" stroke="#3b82f6" stroke-width="2.5" stroke-linecap="round"/>
+          <path d="M20 22 Q26 18 32 22" stroke="#3b82f6" stroke-width="2.5" stroke-linecap="round"/>
+          <path d="M32 22 Q38 20 40 28" stroke="#3b82f6" stroke-width="2.5" stroke-linecap="round"/>
+          <!-- end-effector / laser head -->
+          <rect x="36" y="26" width="8" height="6" rx="2" fill="rgba(59,130,246,.2)" stroke="#3b82f6" stroke-width="1.5"/>
+          <line x1="40" y1="32" x2="40" y2="36" stroke="#3b82f6" stroke-width="2" stroke-linecap="round"/>
+          <!-- laser beam -->
+          <line x1="38" y1="36" x2="40" y2="40" stroke="#f59e0b" stroke-width="1.5" stroke-linecap="round" opacity=".9"/>
+          <line x1="40" y1="36" x2="40" y2="42" stroke="#f59e0b" stroke-width="1.5" stroke-linecap="round" opacity=".9"/>
+          <line x1="42" y1="36" x2="40" y2="40" stroke="#f59e0b" stroke-width="1.5" stroke-linecap="round" opacity=".9"/>
+          <!-- base -->
+          <rect x="10" y="40" width="10" height="5" rx="2" fill="rgba(59,130,246,.2)" stroke="#3b82f6" stroke-width="1.5"/>
+        </svg>
+      </div>
+
+      <div class="platform-badge">
+        <svg width="8" height="8" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12 8 12 12 15 15"/></svg>
+        Established
+      </div>
+
+      <div class="platform-name">Robot</div>
+      <div class="platform-tagline">
+        ABB/KUKA robot-mounted laser head.<br>
+        Uses ABB RAPID .mod program files.
+      </div>
+
+      <div class="card-divider"></div>
+
+      <ul class="platform-features">
+        <li><span class="feat-dot"></span>RAPID code parser — multi-layer .mod ZIP</li>
+        <li><span class="feat-dot"></span>Rykalin thermal field simulation</li>
+        <li><span class="feat-dot"></span>ISM residual stress &amp; distortion</li>
+        <li><span class="feat-dot"></span>3D heat-map &amp; animation</li>
+        <li><span class="feat-dot"></span>Live sensor dashboard &amp; post-print review</li>
+      </ul>
+
+      <div class="platform-cta">
+        Open Robot Analyser
+        <span class="cta-arrow">
+          <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </span>
+      </div>
+    </a>
+
+    <!-- ── M600 card ── -->
+    <a href="/m600" class="platform-card m600">
+      <span class="new-pill">New</span>
+
+      <!-- Icon -->
+      <div class="platform-icon">
+        <svg width="56" height="56" fill="none" viewBox="0 0 56 56">
+          <rect width="56" height="56" rx="14" fill="rgba(245,158,11,.1)" stroke="rgba(245,158,11,.3)" stroke-width="1.5"/>
+          <!-- XYZ frame -->
+          <rect x="10" y="10" width="36" height="36" rx="3" fill="none" stroke="rgba(245,158,11,.4)" stroke-width="1.5" stroke-dasharray="3 2"/>
+          <!-- Gantry X rail -->
+          <line x1="10" y1="22" x2="46" y2="22" stroke="#f59e0b" stroke-width="2" stroke-linecap="round"/>
+          <!-- Gantry Y rail -->
+          <line x1="28" y1="10" x2="28" y2="22" stroke="#f59e0b" stroke-width="2" stroke-linecap="round"/>
+          <!-- Print head -->
+          <rect x="23" y="19" width="10" height="8" rx="2" fill="rgba(245,158,11,.2)" stroke="#f59e0b" stroke-width="1.5"/>
+          <!-- Laser -->
+          <line x1="28" y1="27" x2="28" y2="32" stroke="#f59e0b" stroke-width="2" stroke-linecap="round"/>
+          <!-- Laser beams -->
+          <line x1="25" y1="32" x2="28" y2="37" stroke="#fff" stroke-width="1.5" stroke-linecap="round" opacity=".8"/>
+          <line x1="28" y1="32" x2="28" y2="38" stroke="#fff" stroke-width="1.5" stroke-linecap="round" opacity=".8"/>
+          <line x1="31" y1="32" x2="28" y2="37" stroke="#fff" stroke-width="1.5" stroke-linecap="round" opacity=".8"/>
+          <!-- Melt pool -->
+          <ellipse cx="28" cy="39" rx="5" ry="2" fill="#f59e0b" opacity=".3"/>
+          <!-- Layers -->
+          <rect x="14" y="40" width="28" height="3" rx="1.5" fill="#f59e0b" opacity=".4"/>
+          <rect x="16" y="43" width="24" height="2.5" rx="1.5" fill="#f59e0b" opacity=".25"/>
+        </svg>
+      </div>
+
+      <div class="platform-badge">
+        <svg width="8" height="8" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+        M600 XYZ
+      </div>
+
+      <div class="platform-name">M600</div>
+      <div class="platform-tagline">
+        Meltio M600 gantry-based XYZ printer.<br>
+        Uses REALvisionCore WelderServo G-code.
+      </div>
+
+      <div class="card-divider"></div>
+
+      <ul class="platform-features">
+        <li><span class="feat-dot"></span>G-code parser — WelderServo dialect</li>
+        <li><span class="feat-dot"></span>Auto-detects layer height, wire diameter</li>
+        <li><span class="feat-dot"></span>Same thermal &amp; stress simulation engine</li>
+        <li><span class="feat-dot"></span>3D heat-map &amp; animation</li>
+        <li><span class="feat-dot"></span>Live sensor dashboard &amp; post-print review</li>
+      </ul>
+
+      <div class="platform-cta">
+        Open M600 Analyser
+        <span class="cta-arrow">
+          <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </span>
+      </div>
+    </a>
+
+  </div>
+
+  <!-- Footer -->
+  <div class="hero-footer">
+    <strong style="color:var(--text2)">Shoham Aerospace &amp; Medical</strong> · Meltio DED Manufacturing<br>
+    Wire-Fed Laser DED Thermal Analysis &amp; Process Intelligence
+  </div>
+
+</div>
+
+</body>
+</html>

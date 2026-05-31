@@ -1,0 +1,225 @@
+{
+  "_info": "Meltio DED Materials Database. Laser: 450 nm blue diode. absorption_450nm, T_liquidus, T_solidus, CTE, and process_window values sourced from DED/AM peer-reviewed literature.",
+  "materials": [
+    {
+      "id": "titanium_ti64",
+      "display_name": "Titanium Ti-6Al-4V",
+      "aliases": ["titanium", "ti64", "ti-6al-4v", "ti6al4v", "grade 5", "ti grade 5"],
+      "thermal_conductivity": 6.7,
+      "density": 4430,
+      "specific_heat": 560,
+      "melting_point": 1660,
+      "T_liquidus": 1655,
+      "T_solidus": 1604,
+      "CTE": 8.6,
+      "absorption_450nm": 0.59,
+      "latent_heat_fusion": 286000,
+      "process_window": {
+        "VED_lof_min": 60,
+        "VED_keyhole_max": 160,
+        "VED_optimal": 90
+      },
+      "notes": "Most common aerospace titanium alloy. High absorption at 450 nm. Narrow solidification range — moderate cracking sensitivity."
+    },
+    {
+      "id": "titanium_cp",
+      "display_name": "Titanium CP Grade 2",
+      "aliases": ["titanium cp", "cp titanium", "ti grade 2", "commercially pure titanium"],
+      "thermal_conductivity": 16.4,
+      "density": 4510,
+      "specific_heat": 520,
+      "melting_point": 1670,
+      "T_liquidus": 1670,
+      "T_solidus": 1668,
+      "CTE": 8.4,
+      "absorption_450nm": 0.58,
+      "latent_heat_fusion": 296000,
+      "process_window": {
+        "VED_lof_min": 55,
+        "VED_keyhole_max": 150,
+        "VED_optimal": 80
+      },
+      "notes": "Commercially pure titanium. Higher conductivity than Ti-6Al-4V. Very narrow solidification range — low cracking risk."
+    },
+    {
+      "id": "stainless_316L",
+      "display_name": "Stainless Steel 316L",
+      "aliases": ["316l", "stainless steel", "ss316l", "316 l", "stainless", "ss 316l", "316"],
+      "thermal_conductivity": 16.3,
+      "density": 7990,
+      "specific_heat": 500,
+      "melting_point": 1390,
+      "T_liquidus": 1440,
+      "T_solidus": 1390,
+      "CTE": 16.0,
+      "absorption_450nm": 0.52,
+      "latent_heat_fusion": 260000,
+      "process_window": {
+        "VED_lof_min": 40,
+        "VED_keyhole_max": 150,
+        "VED_optimal": 70
+      },
+      "notes": "Austenitic stainless steel. Moderate solidification range (50°C). Well-characterised DED process window."
+    },
+    {
+      "id": "stainless_304",
+      "display_name": "Stainless Steel 304",
+      "aliases": ["304", "ss304", "stainless 304", "18-8 stainless", "ss 304"],
+      "thermal_conductivity": 16.2,
+      "density": 8000,
+      "specific_heat": 500,
+      "melting_point": 1400,
+      "T_liquidus": 1450,
+      "T_solidus": 1400,
+      "CTE": 17.2,
+      "absorption_450nm": 0.52,
+      "latent_heat_fusion": 260000,
+      "process_window": {
+        "VED_lof_min": 40,
+        "VED_keyhole_max": 150,
+        "VED_optimal": 70
+      },
+      "notes": "Most common austenitic stainless steel. Similar DED behaviour to 316L."
+    },
+    {
+      "id": "aluminium_6061",
+      "display_name": "Aluminium 6061",
+      "aliases": ["aluminium", "aluminum", "6061", "al6061", "al 6061", "6061-t6", "aluminium 6061"],
+      "thermal_conductivity": 167.0,
+      "density": 2700,
+      "specific_heat": 896,
+      "melting_point": 652,
+      "T_liquidus": 652,
+      "T_solidus": 582,
+      "CTE": 23.6,
+      "absorption_450nm": 0.22,
+      "latent_heat_fusion": 397000,
+      "process_window": {
+        "VED_lof_min": 20,
+        "VED_keyhole_max": 60,
+        "VED_optimal": 35
+      },
+      "notes": "High conductivity — requires lower VED than steels. Wide solidification range (70°C) elevates cracking risk. High CTE increases delamination risk."
+    },
+    {
+      "id": "copper_pure",
+      "display_name": "Copper (Pure / ETP)",
+      "aliases": ["copper", "cu", "etp copper", "pure copper", "cu pure"],
+      "thermal_conductivity": 401.0,
+      "density": 8960,
+      "specific_heat": 385,
+      "melting_point": 1085,
+      "T_liquidus": 1085,
+      "T_solidus": 1083,
+      "CTE": 17.0,
+      "absorption_450nm": 0.62,
+      "latent_heat_fusion": 207000,
+      "process_window": {
+        "VED_lof_min": 30,
+        "VED_keyhole_max": 100,
+        "VED_optimal": 55
+      },
+      "notes": "Blue 450 nm laser gives ~10x better absorption vs IR (1064 nm). Very narrow solidification range — low cracking risk. Very high conductivity demands careful VED control."
+    },
+    {
+      "id": "inconel_625",
+      "display_name": "Inconel 625",
+      "aliases": ["inconel 625", "in625", "inconel625", "625", "nickel 625", "nickel-based 625"],
+      "thermal_conductivity": 9.8,
+      "density": 8440,
+      "specific_heat": 410,
+      "melting_point": 1350,
+      "T_liquidus": 1350,
+      "T_solidus": 1290,
+      "CTE": 12.8,
+      "absorption_450nm": 0.50,
+      "latent_heat_fusion": 290000,
+      "process_window": {
+        "VED_lof_min": 55,
+        "VED_keyhole_max": 110,
+        "VED_optimal": 75
+      },
+      "notes": "Nickel-chromium superalloy. Wide solidification range (60°C) — elevated hot-cracking risk at high cooling rates."
+    },
+    {
+      "id": "inconel_718",
+      "display_name": "Inconel 718",
+      "aliases": ["inconel 718", "in718", "inconel718", "718", "nickel 718", "nickel-based 718"],
+      "thermal_conductivity": 11.4,
+      "density": 8190,
+      "specific_heat": 435,
+      "melting_point": 1336,
+      "T_liquidus": 1336,
+      "T_solidus": 1260,
+      "CTE": 13.0,
+      "absorption_450nm": 0.50,
+      "latent_heat_fusion": 227000,
+      "process_window": {
+        "VED_lof_min": 55,
+        "VED_keyhole_max": 110,
+        "VED_optimal": 75
+      },
+      "notes": "Precipitation-hardened nickel superalloy. Wide solidification range (76°C) — high hot-cracking sensitivity. Common in aerospace turbines."
+    },
+    {
+      "id": "hastelloy_c276",
+      "display_name": "Hastelloy C-276",
+      "aliases": ["hastelloy c276", "c-276", "c276", "hastelloy c-276", "hastelloy"],
+      "thermal_conductivity": 10.2,
+      "density": 8890,
+      "specific_heat": 427,
+      "melting_point": 1371,
+      "T_liquidus": 1371,
+      "T_solidus": 1323,
+      "CTE": 11.2,
+      "absorption_450nm": 0.48,
+      "latent_heat_fusion": 275000,
+      "process_window": {
+        "VED_lof_min": 55,
+        "VED_keyhole_max": 120,
+        "VED_optimal": 80
+      },
+      "notes": "Nickel-molybdenum-chromium. Moderate solidification range (48°C). Good corrosion resistance in harsh environments."
+    },
+    {
+      "id": "hastelloy_x",
+      "display_name": "Hastelloy X",
+      "aliases": ["hastelloy x", "hx", "hastelloy-x", "hastelloy x alloy"],
+      "thermal_conductivity": 11.5,
+      "density": 8220,
+      "specific_heat": 461,
+      "melting_point": 1355,
+      "T_liquidus": 1355,
+      "T_solidus": 1260,
+      "CTE": 13.9,
+      "absorption_450nm": 0.48,
+      "latent_heat_fusion": 280000,
+      "process_window": {
+        "VED_lof_min": 55,
+        "VED_keyhole_max": 120,
+        "VED_optimal": 80
+      },
+      "notes": "Ni-Cr-Fe-Mo alloy. Wide solidification range (95°C) — highest hot-cracking sensitivity in this database. Monitor cooling rate closely."
+    },
+    {
+      "id": "er70s",
+      "display_name": "ER70S (Mild Steel Wire)",
+      "aliases": ["er70s", "er70s-6", "er70", "mild steel", "carbon steel", "er70 wire"],
+      "thermal_conductivity": 51.9,
+      "density": 7850,
+      "specific_heat": 486,
+      "melting_point": 1510,
+      "T_liquidus": 1510,
+      "T_solidus": 1490,
+      "CTE": 12.0,
+      "absorption_450nm": 0.48,
+      "latent_heat_fusion": 247000,
+      "process_window": {
+        "VED_lof_min": 50,
+        "VED_keyhole_max": 140,
+        "VED_optimal": 80
+      },
+      "notes": "Standard mild steel wire. Narrow solidification range (20°C) — low cracking risk. Well-behaved DED material."
+    }
+  ]
+}
