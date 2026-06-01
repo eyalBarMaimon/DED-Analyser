@@ -1,4 +1,4 @@
-# DED Analyser — Heat Map v1.0.1
+# DED Analyser — Heat Map v1.0.2
 
 Meltio wire-laser DED thermal analysis tool.  
 Analyses RAPID toolpath code, runs FEM thermal simulation, and visualises residual stress and heat distribution.
@@ -43,6 +43,10 @@ Open your browser at: **http://localhost:5050/ded**
 
 ### Windows shortcut
 Double-click **`DED Analyser-Heat map.bat`** — starts the server and opens the browser automatically.
+
+### Mac shortcut
+Double-click **`DED Analyser.command`** — installs dependencies automatically and opens the browser.  
+If macOS blocks it: right-click → **Open** → confirm.
 
 ---
 
@@ -118,5 +122,9 @@ Hastelloy C-276, Hastelloy X, Aluminium 6061, ER70S Mild Steel, Copper
 ---
 
 ## Version
+**v1.0.2** — 1 Jun 2026  
+- Fixed crash when running from IDLE / Python shell (`sys.stdout.buffer` AttributeError)  
+- Added Mac launcher (`DED Analyser.command`) — double-click to start  
+
 **v1.0.1** — 31 May 2026  
 Repository: https://github.com/eyalBarMaimon/DED-Analyser

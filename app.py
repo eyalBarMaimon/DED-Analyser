@@ -2293,7 +2293,8 @@ def shutdown():
 
 if __name__ == "__main__":
     import socket, io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    if hasattr(sys.stdout, 'buffer'):
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     port = int(os.environ.get("PORT", 5050))
     local_ip = socket.gethostbyname(socket.gethostname())
     print("Meltio DED Analyzer")
