@@ -269,7 +269,26 @@ class MeltioDEDAnalyzer:
                         "speed":          speed,
                         "material":       active_material,
                         "is_deposition":  deposition_active,
+                        "is_seam_start":  False,   # filled below
+                        "is_seam_end":    False,   # filled below
                     })
+
+        # ── Mark seam start/end points per layer ─────────────────────────
+        # Seam start = first deposition waypoint of each layer
+        # Seam end   = last  deposition waypoint of each layer
+        from collections import defaultdict
+        layer_dep_indices: dict = defaultdict(list)
+        for idx, wp in enumerate(self.waypoints):
+            if wp["is_deposition"]:
+                layer_dep_indices[wp["layer_num"]].append(idx)
+        seam_start_indices = set()
+        seam_end_indices   = set()
+        for ln, idxs in layer_dep_indices.items():
+            if idxs:
+                self.waypoints[idxs[0]]["is_seam_start"] = True
+                self.waypoints[idxs[-1]]["is_seam_end"]  = True
+                seam_start_indices.add(idxs[0])
+                seam_end_indices.add(idxs[-1])
 
         # ── After ALL layers: flag any change never confirmed ─────────────
         for evt in self.material_changes:
@@ -285,6 +304,7 @@ class MeltioDEDAnalyzer:
         print(f"   ✅ Extracted {len(self.waypoints)} waypoints")
         print(f"   ✅ Found {len(self.material_changes)} material change events")
         print(f"   ✅ Total print time from code: {total_secs/60:.1f} min ({len(self.layer_times)} layers with timing)")
+        print(f"   ✅ Seam points marked: {len(seam_start_indices)} layer starts, {len(seam_end_indices)} layer ends")
 
     # ─── STEP 3: USER CLARIFICATIONS ────────────────────────────────────────
 
@@ -497,10 +517,40 @@ class MeltioDEDAnalyzer:
             solidif_range      = T_liq - mat.get("T_solidus", T_liq - 50)
             lof_risk           = VED < pw_mat.get("VED_lof_min", 25)
             keyhole_risk       = norm_H > 25.0
-            overheat_risk      = False   # set after FDM using residual temperature
             lof_depth_risk     = melt_fuse_ratio < 1.1
             cracking_score     = round(min(1.0,
                                     (cooling_rate_Ks / 1e5) * (solidif_range / 100.0)), 3)
+
+            # (f) Seam metrics — extra energy & risk at layer start/end points
+            is_seam_start = wp.get("is_seam_start", False)
+            is_seam_end   = wp.get("is_seam_end",   False)
+            is_seam       = is_seam_start or is_seam_end
+
+            # Overlap energy: at seam start the bead overlaps with the end of the
+            # previous layer (~1 bead-width worth of double-heating).
+            # E_overlap [J/mm] = E_linear × (overlap_length / bead_width)
+            # overlap_length estimated as 1 bead width (conservative)
+            seam_overlap_energy = round((absorption * laser_W) / max(wp["speed"], 0.01), 2) if is_seam_start else 0.0
+
+            # Gap distance to previous layer's seam end (inter-layer seam distance).
+            # Search backward by layer_num, not a fixed point window, so large layers work correctly.
+            seam_gap_mm = 0.0
+            if is_seam_start and i > 0:
+                target_layer = wp["layer_num"] - 1
+                for back in range(i - 1, -1, -1):
+                    bwp = dep_wps[back]
+                    if bwp["layer_num"] < target_layer:
+                        break  # overshot — give up
+                    if bwp.get("is_seam_end") and bwp["layer_num"] == target_layer:
+                        seam_gap_mm = round(math.sqrt(
+                            (wp["x"] - bwp["x"])**2 +
+                            (wp["y"] - bwp["y"])**2 +
+                            (wp["z"] - bwp["z"])**2), 2)
+                        break
+
+            # Seam risk score: higher when seam is always at same XY (low drift)
+            # Computed globally after all waypoints; per-point flag here.
+            seam_risk = "high" if is_seam else "none"
 
             self.thermal_data.append({
                 **wp,
@@ -527,10 +577,16 @@ class MeltioDEDAnalyzer:
                 "G_over_R":            round(G_over_R,     1),
                 "lof_risk":            lof_risk,
                 "keyhole_risk":        keyhole_risk,
-                "overheat_risk":       overheat_risk,
+                "overheat_risk":       False,   # updated after FDM residual-temp pass
                 "lof_depth_risk":      lof_depth_risk,
                 "cracking_score":      cracking_score,
                 "t_elapsed":           round(t_elapsed, 3),
+                # ── seam metrics ──────────────────────────────────────────
+                "is_seam_start":       is_seam_start,
+                "is_seam_end":         is_seam_end,
+                "seam_overlap_energy": seam_overlap_energy,
+                "seam_gap_mm":         seam_gap_mm,
+                "seam_risk":           seam_risk,
             })
 
             t_elapsed += dt   # accumulate print time after storing current stamp
@@ -833,6 +889,33 @@ class MeltioDEDAnalyzer:
             print(f"   📐  High-curvature zones: {len(hi_cv)}")
             print(f"   ⚠️  LOF risk zones: {lof_ct} | Keyhole risk: {kh_ct} | Overheat: {oh_ct}")
 
+            # ── Seam summary ─────────────────────────────────────────────
+            seam_starts = [d for d in self.thermal_data if d.get("is_seam_start")]
+            seam_ends   = [d for d in self.thermal_data if d.get("is_seam_end")]
+            if seam_starts:
+                # XY drift across all seam start points
+                xs = [d["x"] for d in seam_starts]
+                ys = [d["y"] for d in seam_starts]
+                xy_drift = math.sqrt((max(xs)-min(xs))**2 + (max(ys)-min(ys))**2)
+                # Gap statistics (inter-layer seam distance)
+                gaps = [d["seam_gap_mm"] for d in seam_starts if d["seam_gap_mm"] > 0]
+                avg_gap = sum(gaps)/len(gaps) if gaps else 0.0
+                max_gap = max(gaps) if gaps else 0.0
+                # Seam temperature statistics
+                seam_temps = [d["temp_C"] for d in seam_starts]
+                avg_seam_t = sum(seam_temps)/len(seam_temps)
+                # Seam type classification
+                if xy_drift < 5:
+                    seam_type = "FIXED (high risk)"
+                elif xy_drift < 30:
+                    seam_type = "NEAR-FIXED (medium risk)"
+                else:
+                    seam_type = "RANDOM (low risk)"
+                print(f"   🧵 Seam points: {len(seam_starts)} starts | {len(seam_ends)} ends")
+                print(f"   🧵 Seam XY drift: {xy_drift:.1f} mm → {seam_type}")
+                print(f"   🧵 Seam gap (inter-layer): avg={avg_gap:.2f} mm, max={max_gap:.2f} mm")
+                print(f"   🧵 Seam avg temp: {avg_seam_t:.0f} °C")
+
     # ─── STEP 5a: HTML COLOR-CODED HEATMAP ─────────────────────────────────
 
     def generate_html_heatmap(self, timestamp: str) -> str:
@@ -871,17 +954,23 @@ class MeltioDEDAnalyzer:
         layers_js = f'[{",".join(layer_data_js)}]'
         layers_list = str(layers)
 
-        # Build start/stop markers data
+        # Build seam markers data (start = seam point, stop = layer end)
         markers_data = []
         for ln in layers:
             pts = by_layer[ln]
             if pts:
+                sp = pts[0]
+                ep = pts[-1]
                 markers_data.append({
-                    "layer": ln,
-                    "start_x": pts[0]["x"],
-                    "start_y": pts[0]["y"],
-                    "stop_x": pts[-1]["x"],
-                    "stop_y": pts[-1]["y"]
+                    "layer":    ln,
+                    "start_x":  sp["x"],
+                    "start_y":  sp["y"],
+                    "stop_x":   ep["x"],
+                    "stop_y":   ep["y"],
+                    "start_tc": sp["temp_C"],
+                    "stop_tc":  ep["temp_C"],
+                    "gap_mm":   sp.get("seam_gap_mm", 0.0),
+                    "overlap_e":sp.get("seam_overlap_energy", 0.0),
                 })
         markers_js = json.dumps(markers_data)
 
@@ -927,7 +1016,7 @@ class MeltioDEDAnalyzer:
     <input type="range" id="ptSize" min="2" max="14" value="5" oninput="drawLayer(currentLayer)">
   </label>
   <label><input type="checkbox" id="showDots" onchange="drawLayer(currentLayer)"> Show dots</label>
-  <label><input type="checkbox" id="showBoundaries" onchange="drawLayer(currentLayer)"> Show layer boundaries</label>
+  <label><input type="checkbox" id="showBoundaries" checked onchange="drawLayer(currentLayer)"> Show seam points</label>
 </div>
 
 <canvas id="cv" width="900" height="600"></canvas>
@@ -1021,29 +1110,33 @@ function drawLayer(idx) {{
     }});
   }}
 
-  // Draw layer start/stop boundary markers (only if showBoundaries is checked)
+  // Draw seam start/end markers
   if (showBoundaries) {{
     MARKERS.forEach(marker => {{
       if (showAll || LAYER_NUMS[idx] === marker.layer) {{
-        // Draw start marker (circle outline in accent color)
+        // Seam START — filled diamond, colour by temperature risk
         const [sx, sy] = toCanvas(marker.start_x, marker.start_y);
+        const tc = marker.start_tc || 0;
+        const seamColor = tc > 1190 ? '#ff3344' : tc > 850 ? '#ffaa00' : '#00ff88';
         ctx.beginPath();
-        ctx.arc(sx, sy, 4, 0, Math.PI*2);
-        ctx.strokeStyle = '#00d4ff';
-        ctx.lineWidth = 2;
+        ctx.moveTo(sx,    sy - 8);
+        ctx.lineTo(sx + 8, sy);
+        ctx.lineTo(sx,    sy + 8);
+        ctx.lineTo(sx - 8, sy);
+        ctx.closePath();
+        ctx.fillStyle   = seamColor;
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth   = 1.5;
         ctx.stroke();
 
-        // Draw stop marker (diamond outline in accent color)
+        // Seam END — filled square (smaller)
         const [ex, ey] = toCanvas(marker.stop_x, marker.stop_y);
-        ctx.beginPath();
-        ctx.moveTo(ex, ey - 4);
-        ctx.lineTo(ex + 4, ey);
-        ctx.lineTo(ex, ey + 4);
-        ctx.lineTo(ex - 4, ey);
-        ctx.closePath();
-        ctx.strokeStyle = '#00d4ff';
-        ctx.lineWidth = 2;
-        ctx.stroke();
+        ctx.fillStyle   = 'rgba(180,50,255,0.85)';
+        ctx.fillRect(ex - 5, ey - 5, 10, 10);
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth   = 1;
+        ctx.strokeRect(ex - 5, ey - 5, 10, 10);
       }}
     }});
   }}
@@ -1054,11 +1147,47 @@ function toggleAll() {{
   drawLayer(currentLayer);
 }}
 
-// Tooltip
+// Tooltip — checks seam markers first, then regular points
 cv.addEventListener('mousemove', e => {{
   const rect = cv.getBoundingClientRect();
   const mx = e.clientX - rect.left, my = e.clientY - rect.top;
   const r = +document.getElementById('ptSize').value + 4;
+
+  // Check seam markers first (larger hit area = 12px)
+  const showBnd = document.getElementById('showBoundaries').checked;
+  if (showBnd) {{
+    const activeMarkers = showAll
+      ? MARKERS
+      : MARKERS.filter(m => m.layer === LAYER_NUMS[currentLayer]);
+    for (const m of activeMarkers) {{
+      const [sx, sy] = toCanvas(m.start_x, m.start_y);
+      if (Math.hypot(mx-sx, my-sy) < 12) {{
+        tooltip.style.display = 'block';
+        tooltip.style.left = (e.clientX+12)+'px';
+        tooltip.style.top  = (e.clientY+12)+'px';
+        const gapStr = m.gap_mm > 0 ? m.gap_mm.toFixed(2)+' mm' : '—';
+        const oeStr  = m.overlap_e > 0 ? m.overlap_e.toFixed(1)+' J/mm' : '—';
+        tooltip.innerHTML = `<b>🧵 SEAM START — Layer ${{m.layer}}</b><br>
+          <b>Temp:</b> <span style="color:#fab432;font-weight:bold">${{m.start_tc ? m.start_tc.toFixed(0) : '—'}} °C</span><br>
+          <b>Gap from prev layer:</b> ${{gapStr}}<br>
+          <b>Overlap energy:</b> ${{oeStr}}<br>
+          <b>X,Y:</b> ${{m.start_x.toFixed(2)}}, ${{m.start_y.toFixed(2)}}`;
+        return;
+      }}
+      const [ex, ey] = toCanvas(m.stop_x, m.stop_y);
+      if (Math.hypot(mx-ex, my-ey) < 10) {{
+        tooltip.style.display = 'block';
+        tooltip.style.left = (e.clientX+12)+'px';
+        tooltip.style.top  = (e.clientY+12)+'px';
+        tooltip.innerHTML = `<b>🧵 SEAM END — Layer ${{m.layer}}</b><br>
+          <b>Temp:</b> <span style="color:#c070ff;font-weight:bold">${{m.stop_tc ? m.stop_tc.toFixed(0) : '—'}} °C</span><br>
+          <b>X,Y:</b> ${{m.stop_x.toFixed(2)}}, ${{m.stop_y.toFixed(2)}}`;
+        return;
+      }}
+    }}
+  }}
+
+  // Regular waypoint tooltip
   const pts = showAll ? LAYERS.flat() : LAYERS[currentLayer];
   let found = null;
   for (const p of pts) {{
@@ -1099,29 +1228,58 @@ drawLayer(0);
         out = (Path(__file__).parent / "outputs" / f"heatmap_{self.user['part_name']}_{timestamp}.csv").resolve()
         out.parent.mkdir(parents=True, exist_ok=True)
 
-        fieldnames = ["layer_num", "x", "y", "z", "speed", "material",
-                      "temp_C", "delta_T_C", "curvature_deg", "E_linear_Jmm",
-                      "absorption", "V1_wire_mm3s", "V2_geometry_mm3s",
-                      "heat_index", "thermal_mass", "tau_cool_s"]
+        fieldnames = [
+            "layer_num", "x", "y", "z", "speed", "material",
+            "temp_C", "temp_C_residual", "delta_T_C", "curvature_deg",
+            "E_linear_Jmm", "absorption", "tau_cool_s",
+            "V1_wire_mm3s", "V2_geometry_mm3s", "heat_index", "thermal_mass",
+            # anomaly metrics
+            "VED", "norm_H", "melt_depth_mm", "melt_fuse_ratio",
+            "G_Km", "R_ms", "cooling_rate_Ks", "G_over_R", "cracking_score",
+            "lof_risk", "keyhole_risk", "overheat_risk", "lof_depth_risk",
+            # seam metrics
+            "is_seam_start", "is_seam_end", "seam_gap_mm", "seam_overlap_energy", "seam_risk",
+        ]
         with open(out, "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=fieldnames)
             w.writeheader()
             for d in self.thermal_data:
                 w.writerow({
-                    "layer_num":         d["layer_num"],
+                    "layer_num":           d["layer_num"],
                     "x": d["x"], "y": d["y"], "z": d["z"],
-                    "speed":             d["speed"],
-                    "material":          d["material"],
-                    "temp_C":            d["temp_C"],
-                    "delta_T_C":         d.get("delta_T", 0),
-                    "curvature_deg":     d.get("curvature_deg", 0),
-                    "E_linear_Jmm":      d.get("E_linear_Jmm", 0),
-                    "absorption":        d.get("absorption", 0),
-                    "V1_wire_mm3s":      d["V1_wire"],
-                    "V2_geometry_mm3s":  d["V2_geometry"],
-                    "heat_index":        d["heat_index"],
-                    "thermal_mass":      d["thermal_mass"],
-                    "tau_cool_s":        d.get("tau_cool_s", 0),
+                    "speed":               d["speed"],
+                    "material":            d["material"],
+                    "temp_C":              d["temp_C"],
+                    "temp_C_residual":     d.get("temp_C_residual", ""),
+                    "delta_T_C":           d.get("delta_T", 0),
+                    "curvature_deg":       d.get("curvature_deg", 0),
+                    "E_linear_Jmm":        d.get("E_linear_Jmm", 0),
+                    "absorption":          d.get("absorption", 0),
+                    "tau_cool_s":          d.get("tau_cool_s", 0),
+                    "V1_wire_mm3s":        d["V1_wire"],
+                    "V2_geometry_mm3s":    d["V2_geometry"],
+                    "heat_index":          d["heat_index"],
+                    "thermal_mass":        d["thermal_mass"],
+                    # anomaly metrics
+                    "VED":                 d.get("VED", ""),
+                    "norm_H":              d.get("norm_H", ""),
+                    "melt_depth_mm":       d.get("melt_depth_mm", ""),
+                    "melt_fuse_ratio":     d.get("melt_fuse_ratio", ""),
+                    "G_Km":                d.get("G_Km", ""),
+                    "R_ms":                d.get("R_ms", ""),
+                    "cooling_rate_Ks":     d.get("cooling_rate_Ks", ""),
+                    "G_over_R":            d.get("G_over_R", ""),
+                    "cracking_score":      d.get("cracking_score", ""),
+                    "lof_risk":            d.get("lof_risk", False),
+                    "keyhole_risk":        d.get("keyhole_risk", False),
+                    "overheat_risk":       d.get("overheat_risk", False),
+                    "lof_depth_risk":      d.get("lof_depth_risk", False),
+                    # seam metrics
+                    "is_seam_start":       d.get("is_seam_start", False),
+                    "is_seam_end":         d.get("is_seam_end", False),
+                    "seam_gap_mm":         d.get("seam_gap_mm", 0.0),
+                    "seam_overlap_energy": d.get("seam_overlap_energy", 0.0),
+                    "seam_risk":           d.get("seam_risk", "none"),
                 })
         print(f"   ✅ CSV data: {out}")
         return str(out)
@@ -1267,6 +1425,8 @@ drawLayer(0);
         ])) + "]"
 
         # VED iso-lines (constant VED curves in P-v space: P = VED × v × h × w / A)
+        if not scatter_pts:
+            return ""
         v_range = [max(0.5, min(p["v"] for p in scatter_pts) * 0.5),
                    max(p["v"] for p in scatter_pts) * 1.5]
         v_steps = [v_range[0] + i * (v_range[1] - v_range[0]) / 50 for i in range(51)]
@@ -1499,7 +1659,7 @@ Plotly.newPlot('plot', allTraces, layout, {{responsive:true, displaylogo:false}}
             mat_traces_parts.append(
                 "{"
                 + f"type:'scatter3d',mode:'lines',"
-                + f"name:'{mat_id} — {mat_display}',"
+                + f"name:{json.dumps(mat_id + ' — ' + mat_display)},"
                 + f"x:{json.dumps(mx)},y:{json.dumps(my)},z:{json.dumps(mz)},"
                 + f"line:{{color:'{color}',width:5}},"
                 + f"text:{json.dumps(mt)},"
@@ -1576,30 +1736,54 @@ Plotly.newPlot('plot', allTraces, layout, {{responsive:true, displaylogo:false}}
             f"hovertemplate:'Temp: %{{intensity:.0f}} °C<extra></extra>'}}"
         )
 
-        # ── Layer start/stop markers (robot pass boundaries) ───────────────
-        start_xs, start_ys, start_zs, start_labels = [], [], [], []
-        stop_xs, stop_ys, stop_zs, stop_labels = [], [], [], []
+        # ── Seam start/end markers with thermal & overlap data ────────────
+        start_xs, start_ys, start_zs, start_labels, start_colors = [], [], [], [], []
+        stop_xs,  stop_ys,  stop_zs,  stop_labels               = [], [], [], []
 
         for ln in layers:
             pts = layer_data[ln]
-            if pts:
-                start_xs.append(pts[0]["x"]); start_ys.append(pts[0]["y"]); start_zs.append(pts[0]["z"])
-                start_labels.append(f"Layer {ln} START — {pts[0].get('temp_C_residual', pts[0]['temp_C']):.0f}°C")
-                stop_xs.append(pts[-1]["x"]); stop_ys.append(pts[-1]["y"]); stop_zs.append(pts[-1]["z"])
-                stop_labels.append(f"Layer {ln} STOP — {pts[-1].get('temp_C_residual', pts[-1]['temp_C']):.0f}°C")
+            if not pts:
+                continue
+            sp = pts[0]   # seam start
+            ep = pts[-1]  # seam end
+
+            sp_tc   = sp.get("temp_C_residual", sp["temp_C"])
+            ep_tc   = ep.get("temp_C_residual", ep["temp_C"])
+            gap     = sp.get("seam_gap_mm", 0.0)
+            overlap = sp.get("seam_overlap_energy", 0.0)
+
+            # Color seam start by overlap risk: red if high temp, green if low
+            sp_risk_color = "#ff3344" if sp_tc > 0.7 * T_melt_c else "#ffaa00" if sp_tc > 0.5 * T_melt_c else "#00ff88"
+
+            start_xs.append(sp["x"]); start_ys.append(sp["y"]); start_zs.append(sp["z"])
+            start_colors.append(sp_risk_color)
+            start_labels.append(
+                f"<b>SEAM START — Layer {ln}</b><br>"
+                f"Temp: {sp_tc:.0f}°C | Speed: {sp['speed']} mm/s<br>"
+                f"Gap from prev layer: {gap:.2f} mm<br>"
+                f"Overlap energy: {overlap:.1f} J/mm<br>"
+                f"Material: {sp['material']}"
+            )
+
+            stop_xs.append(ep["x"]); stop_ys.append(ep["y"]); stop_zs.append(ep["z"])
+            stop_labels.append(
+                f"<b>SEAM END — Layer {ln}</b><br>"
+                f"Temp: {ep_tc:.0f}°C | Speed: {ep['speed']} mm/s<br>"
+                f"Material: {ep['material']}"
+            )
 
         start_trace = (
-            f"{{type:'scatter3d',mode:'markers',name:'Pass Start ▶',"
+            f"{{type:'scatter3d',mode:'markers',name:'Seam Start ▶',"
             f"x:{start_xs},y:{start_ys},z:{start_zs},"
-            f"marker:{{symbol:'circle',size:6,color:'#00ff88',opacity:1.0,"
+            f"marker:{{symbol:'diamond',size:7,color:{json.dumps(start_colors)},opacity:1.0,"
             f"line:{{color:'white',width:1}}}},"
             f"text:{json.dumps(start_labels)},"
             f"hovertemplate:'%{{text}}<extra></extra>',visible:true}}"
         )
         stop_trace = (
-            f"{{type:'scatter3d',mode:'markers',name:'Pass Stop ■',"
+            f"{{type:'scatter3d',mode:'markers',name:'Seam End ■',"
             f"x:{stop_xs},y:{stop_ys},z:{stop_zs},"
-            f"marker:{{symbol:'square',size:6,color:'#ff4466',opacity:1.0,"
+            f"marker:{{symbol:'square',size:5,color:'#cc3366',opacity:0.8,"
             f"line:{{color:'white',width:1}}}},"
             f"text:{json.dumps(stop_labels)},"
             f"hovertemplate:'%{{text}}<extra></extra>',visible:true}}"

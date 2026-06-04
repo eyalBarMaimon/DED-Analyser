@@ -393,6 +393,59 @@ def _run_stress_compute(data: dict):
     return compute_stress(data)
 
 
+def _build_seam_summary(analyzer) -> dict:
+    """Extract seam start/end positions and thermal data for frontend display."""
+    import math as _math
+    td = analyzer.thermal_data
+    if not td:
+        return {}
+
+    starts = [d for d in td if d.get("is_seam_start")]
+    ends   = [d for d in td if d.get("is_seam_end")]
+    if not starts:
+        return {}
+
+    xs = [d["x"] for d in starts]
+    ys = [d["y"] for d in starts]
+    xy_drift = _math.sqrt((max(xs) - min(xs))**2 + (max(ys) - min(ys))**2)
+
+    gaps = [d["seam_gap_mm"] for d in starts if d["seam_gap_mm"] > 0]
+    temps = [d["temp_C"] for d in starts]
+
+    if xy_drift < 5:
+        seam_type = "FIXED"
+        risk = "HIGH"
+    elif xy_drift < 30:
+        seam_type = "NEAR-FIXED"
+        risk = "MEDIUM"
+    else:
+        seam_type = "RANDOM"
+        risk = "LOW"
+
+    return {
+        "count": len(starts),
+        "xy_drift_mm": round(xy_drift, 1),
+        "seam_type": seam_type,
+        "risk": risk,
+        "avg_gap_mm":  round(sum(gaps) / len(gaps), 2) if gaps else 0,
+        "max_gap_mm":  round(max(gaps), 2) if gaps else 0,
+        "avg_temp_C":  round(sum(temps) / len(temps), 0) if temps else 0,
+        # Full arrays for 3D scatter overlay in frontend
+        "start_x":     [round(d["x"], 2) for d in starts],
+        "start_y":     [round(d["y"], 2) for d in starts],
+        "start_z":     [round(d["z"], 2) for d in starts],
+        "start_tc":    [round(d["temp_C"], 0) for d in starts],
+        "start_gap":   [round(d["seam_gap_mm"], 2) for d in starts],
+        "start_oe":    [round(d["seam_overlap_energy"], 1) for d in starts],
+        "start_layer": [d["layer_num"] for d in starts],
+        "end_x":       [round(d["x"], 2) for d in ends],
+        "end_y":       [round(d["y"], 2) for d in ends],
+        "end_z":       [round(d["z"], 2) for d in ends],
+        "end_tc":      [round(d["temp_C"], 0) for d in ends],
+        "end_layer":   [d["layer_num"] for d in ends],
+    }
+
+
 def _run_analysis_job(jid: str, zip_path: str, filename: str, form: dict):
     try:
         _job_stage(jid, "Extracting ZIP…", 3)
@@ -458,7 +511,9 @@ def _run_analysis_job(jid: str, zip_path: str, filename: str, form: dict):
         _job_stage(jid, "Computing stress estimate…", 95)
         _auto_stress = run_auto_stress(analyzer)
 
-        viz["distort"] = ""
+        _job_stage(jid, "Generating distortion animation…", 97)
+        v_distort = analyzer.generate_distortion_animation_html(_auto_stress or {}, ts) if _auto_stress else ""
+        viz["distort"] = v_distort
         viz["mesh"] = ""
 
         hi_vals    = [d["heat_index"]    for d in analyzer.thermal_data] or [0]
@@ -512,6 +567,7 @@ def _run_analysis_job(jid: str, zip_path: str, filename: str, form: dict):
             "io_signals": sorted(set(s for sigs in analyzer.digital_ios.values() for s in sigs)),
             "print_time": pt,
             "inert_environment": analyzer.user["inert_environment"],
+            "seam_analysis": _build_seam_summary(analyzer),
             "anomalies": {
                 "lof_zones":          sum(1 for d in analyzer.thermal_data if d.get("lof_risk")),
                 "keyhole_zones":      sum(1 for d in analyzer.thermal_data if d.get("keyhole_risk")),
@@ -2153,7 +2209,9 @@ def _run_m600_analysis_job(jid: str, gcode_path: str, filename: str, form: dict)
         import time as _time_mod; _t97 = _time_mod.time()
         _auto_stress = run_auto_stress(analyzer)
 
-        viz["distort"] = ""
+        _job_stage(jid, "Generating distortion animation…", 97)
+        v_distort = analyzer.generate_distortion_animation_html(_auto_stress or {}, ts) if _auto_stress else ""
+        viz["distort"] = v_distort
         viz["mesh"] = ""
 
         hi_vals    = [d["heat_index"]    for d in analyzer.thermal_data] or [0]

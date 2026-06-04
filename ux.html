@@ -420,18 +420,35 @@ input::placeholder { color: var(--muted); }
 <aside class="sidebar">
   <div class="brand">
     <div class="brand-name">DED Analyser</div>
-    <div class="brand-sub">Heat Map · v1.0.1</div>
+    <div class="brand-sub">Heat Map · v1.0.3</div>
   </div>
 
   <div class="nav">
+    <div class="nav-section">Workflow</div>
     <div class="nav-item active" onclick="showPage('preprint')">
-      <span class="ico"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg></span> Analysis
+      <span class="ico"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg></span> Pre-Print Analysis
+    </div>
+    <div class="nav-item" onclick="showPage('live')">
+      <span class="ico"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4M7 9l3 3 3-3 3 3"/></svg></span> Live Dashboard
+    </div>
+    <div class="nav-item" onclick="showPage('postprint')">
+      <span class="ico"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path d="M18 20V10M12 20V4M6 20v-6"/></svg></span> Post-Print Review
+    </div>
+    <div class="nav-item" onclick="showPage('offline')">
+      <span class="ico"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8" fill="currentColor" stroke="none"/></svg></span> Offline Replay
+    </div>
+    <div class="nav-section">Data</div>
+    <div class="nav-item" onclick="showPage('history')">
+      <span class="ico"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></span> Print History
+    </div>
+    <div class="nav-item" onclick="showPage('materials')">
+      <span class="ico"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg></span> Materials DB
     </div>
   </div>
 
   <!-- Logo above footer -->
-  <div style="padding:16px 20px 0">
-    <svg viewBox="0 0 200 72" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:160px;opacity:.75">
+  <div style="padding:8px 20px 0;margin-top:auto">
+    <svg viewBox="0 0 200 72" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:140px;opacity:.75">
       <!-- Wire spool left -->
       <circle cx="18" cy="36" r="14" fill="none" stroke="var(--accent)" stroke-width="2"/>
       <circle cx="18" cy="36" r="7"  fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="3 2"/>
@@ -694,6 +711,8 @@ input::placeholder { color: var(--muted); }
   <!-- hidden stubs for JS compat (no visible UI) -->
   <div id="sec-results-collapse" style="display:none">
     <div id="outputFilesBar" style="display:none"></div>
+    <div id="seamAnalysisCard" style="display:none;padding:12px 16px;margin-bottom:12px;
+         background:var(--surface);border:1px solid var(--border);border-radius:8px"></div>
     <div id="resultsContent" style="display:none">
       <div id="statGrid"></div>
       <div id="tab-thermal" style="display:none">
@@ -955,6 +974,13 @@ input::placeholder { color: var(--muted); }
           </div>
 
           <!-- Reset -->
+          <!-- Seam toggle -->
+          <label style="display:flex;align-items:center;gap:6px;font-size:.75rem;font-weight:600;color:var(--text2);cursor:pointer">
+            <input type="checkbox" id="femShowSeam" checked onchange="femApplyFilters()"
+                   style="accent-color:var(--accent);width:14px;height:14px">
+            Show seam
+          </label>
+
           <button onclick="femResetFilters()"
                   style="height:26px;padding:0 10px;font-size:.75rem;border:1px solid var(--border);
                          border-radius:5px;background:var(--surface);color:var(--text2);cursor:pointer">
@@ -997,54 +1023,133 @@ input::placeholder { color: var(--muted); }
     </div>
   </div>
 
-  <!-- compat stubs for JS that refs overlay/mesh/anim elements -->
-  <div style="display:none">
-    <div id="sec-mesh-collapse"></div><div id="sec-mesh"></div>
-    <div id="overlayCard"></div><iframe id="overlayFrame"></iframe><a id="linkOverlay"></a>
-    <div id="animCard"></div><iframe id="animFrame"></iframe><a id="linkAnim"></a>
-    <div id="meshCard"></div><iframe id="meshFrame"></iframe><a id="linkMesh"></a>
-    <div id="meshEmptyState"></div>
-  </div>
 
-  <!-- compat stubs for JS that refs stress/sensitivity hidden elements -->
-  <div style="display:none">
-    <div id="sec-stress-layer-collapse"></div>
-    <div id="sec-stress-layer"></div>
-    <div id="stressRunBtn"></div>
-    <div id="stressStatus"></div>
-    <div id="stressLoadFromAnalysisBtn"></div>
-    <div id="stressResults"></div>
-    <div id="stressLayerChart"></div>
-    <div id="stressEmpty"></div>
-    <div id="stressStatStrip"></div>
-    <div id="stressDeltaChart"></div>
-    <div id="stress3dBox"><div id="stress3dPlot"></div></div>
-    <div id="stressRiskZones"></div>
-    <div id="stressSensitivity"></div>
-    <div id="stressThermalInsight"></div>
-    <div id="stressGoNogo"></div>
-    <select id="stressMaterialPreset" onchange="stressLoadPreset(this.value)">
-      <option value="SS316L">Stainless Steel 316L</option>
-      <option value="Ti64">Titanium Ti-6Al-4V</option>
-      <option value="IN625">Inconel 625</option>
-      <option value="H13">H13 Tool Steel</option>
-      <option value="ER70S6">ER70S-6 Mild Steel</option>
-      <option value="Cu">Copper CW004A</option>
-      <option value="custom">Custom…</option>
-    </select>
-    <input type="number" id="sE" value="193"><input type="number" id="sYield" value="310">
-    <input type="number" id="sAlpha" value="16.0"><input type="number" id="sK" value="16">
-    <input type="number" id="sRho" value="7980"><input type="number" id="sCp" value="500">
-    <input type="number" id="sTmelt" value="1375"><input type="number" id="sLaserP" value="1000">
-    <input type="number" id="sScanV" value="10"><input type="number" id="sWireDiam" value="1.2">
-    <input type="number" id="sWireFeed" value="80"><input type="number" id="sLayerH" value="0.5">
-    <input type="number" id="sBeadW" value="2.0"><input type="number" id="sAbsorb" value="0.35">
-    <input type="number" id="sAmb" value="25"><input type="number" id="sDwell" value="5">
-    <input type="number" id="sNumLayers" value="50"><input type="number" id="sWallT" value="5">
-    <div id="sec-fem-collapse"></div>
-    <div id="sec-stress"></div>
-    <div id="chevron-sec-stress-layer"></div>
-  </div>
+  <!-- Section 4: Stress Analysis (ported from Bundle) -->
+  <div class="section-collapse" id="sec-stress-collapse" style="display:none">
+    <div class="section-header" onclick="toggleSection('sec-stress')">
+      <div class="section-title">⚡ Stress Analysis <span style="font-weight:400;color:var(--muted);font-size:.78rem;margin-left:8px">Residual stress &amp; distortion prediction</span></div>
+      <div class="section-chevron" id="chevron-sec-stress">▼</div>
+    </div>
+    <div class="section-body closed" id="sec-stress">
+
+      <!-- Input parameters -->
+      <div class="card" style="margin-top:0">
+        <div class="card-label">Simulation Parameters</div>
+        <div class="stress-params-grid">
+
+          <!-- Column 1: Material -->
+          <div>
+            <div style="font-size:.75rem;font-weight:600;color:var(--text2);margin-bottom:10px;text-transform:uppercase;letter-spacing:.04em">Material</div>
+            <div class="stress-group" style="margin-bottom:10px">
+              <label>Preset</label>
+              <select class="stress-mat-select" id="stressMaterialPreset" onchange="stressLoadPreset(this.value)">
+                <option value="SS316L">Stainless Steel 316L</option>
+                <option value="Ti64">Titanium Ti-6Al-4V</option>
+                <option value="IN625">Inconel 625</option>
+                <option value="H13">H13 Tool Steel</option>
+                <option value="ER70S6">ER70S-6 Mild Steel</option>
+                <option value="Cu">Copper CW004A</option>
+                <option value="custom">Custom…</option>
+              </select>
+            </div>
+            <div class="form-grid" style="grid-template-columns:1fr 1fr;gap:8px">
+              <div class="stress-group"><label>Young's Modulus (GPa)</label><input type="number" id="sE" value="193" min="1"></div>
+              <div class="stress-group"><label>Yield Strength (MPa)</label><input type="number" id="sYield" value="310" min="1"></div>
+              <div class="stress-group"><label>α (×10⁻⁶ /K)</label><input type="number" id="sAlpha" value="16.0" step="0.1"></div>
+              <div class="stress-group"><label>k (W/m·K)</label><input type="number" id="sK" value="16" step="0.5"></div>
+              <div class="stress-group"><label>Density (kg/m³)</label><input type="number" id="sRho" value="7980"></div>
+              <div class="stress-group"><label>Cp (J/kg·K)</label><input type="number" id="sCp" value="500"></div>
+              <div class="stress-group"><label>Melt point (°C)</label><input type="number" id="sTmelt" value="1375"></div>
+            </div>
+          </div>
+
+          <!-- Column 2: Process -->
+          <div>
+            <div style="font-size:.75rem;font-weight:600;color:var(--text2);margin-bottom:10px;text-transform:uppercase;letter-spacing:.04em">Process Parameters</div>
+            <div class="form-grid" style="grid-template-columns:1fr 1fr;gap:8px">
+              <div class="stress-group"><label>Laser Power (W)</label><input type="number" id="sLaserP" value="1000" min="1"></div>
+              <div class="stress-group"><label>Scan Speed (mm/s)</label><input type="number" id="sScanV" value="10" min="0.1" step="0.5"></div>
+              <div class="stress-group"><label>Wire Diameter (mm)</label><input type="number" id="sWireDiam" value="1.2" step="0.1" min="0.5" max="3.0"></div>
+              <div class="stress-group"><label>Wire Feed Speed (mm/s)</label><input type="number" id="sWireFeed" value="80" step="5" min="10" max="300"></div>
+              <div class="stress-group"><label>Layer Height (mm)</label><input type="number" id="sLayerH" value="0.5" step="0.1" min="0.1"></div>
+              <div class="stress-group"><label>Bead Width (mm)</label><input type="number" id="sBeadW" value="2.0" step="0.1" min="0.1"></div>
+              <div class="stress-group"><label>Absorption Coeff.</label><input type="number" id="sAbsorb" value="0.35" step="0.01" min="0.1" max="0.9"></div>
+              <div class="stress-group"><label>Ambient Temp (°C)</label><input type="number" id="sAmb" value="25"></div>
+              <div class="stress-group"><label>Dwell / Layer (s)</label><input type="number" id="sDwell" value="5" min="0" step="1"></div>
+            </div>
+          </div>
+
+          <!-- Column 3: Geometry -->
+          <div>
+            <div style="font-size:.75rem;font-weight:600;color:var(--text2);margin-bottom:10px;text-transform:uppercase;letter-spacing:.04em">Part Geometry</div>
+            <div class="form-grid" style="grid-template-columns:1fr 1fr;gap:8px">
+              <div class="stress-group"><label>Number of Layers</label><input type="number" id="sNumLayers" value="50" min="1"></div>
+              <div class="stress-group"><label>Wall Thickness (mm)</label><input type="number" id="sWallT" value="5" step="0.5" min="0.5"></div>
+            </div>
+            <div style="margin-top:12px">
+              <div style="font-size:.73rem;color:var(--muted);line-height:1.5;padding:10px;background:var(--bg);border-radius:6px;border:1px solid var(--border)">
+                <strong style="color:var(--text2)">Physics model:</strong><br>
+                Inherent Strain Method (ISM) with Rosenthal thermal field.
+                Accounts for substrate constraint, dwell-time stress relief, and bending distortion via cantilever beam approximation.
+              </div>
+            </div>
+            <div style="margin-top:10px">
+              <span class="stress-load-btn" id="stressLoadFromAnalysisBtn" onclick="stressLoadFromAnalysis()" style="display:none">
+                ⬇ Load from Analysis
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top:16px;display:flex;align-items:center;gap:12px">
+          <button class="btn" onclick="stressRun()" id="stressRunBtn">⚡ Run Simulation</button>
+          <span id="stressStatus" style="font-size:.8rem;color:var(--muted)"></span>
+        </div>
+      </div>
+
+      <!-- Results (hidden until run) -->
+      <div id="stressResults" style="display:none">
+        <div class="stress-stat-strip" id="stressStatStrip"></div>
+        <div class="stress-charts-row">
+          <div class="stress-chart-box">
+            <div class="stress-chart-title">Residual Stress per Layer</div>
+            <div id="stressLayerChart" style="height:260px"></div>
+          </div>
+          <div class="stress-chart-box">
+            <div class="stress-chart-title">Bending Distortion (Tip Deflection)</div>
+            <div id="stressDeltaChart" style="height:260px"></div>
+          </div>
+        </div>
+        <div class="stress-3d-box" id="stress3dBox" style="display:none">
+          <div class="stress-chart-title">3D Residual Stress Heatmap</div>
+          <div id="stress3dPlot" style="height:420px"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px">
+          <div class="card" style="margin:0">
+            <div class="card-label">Risk Zones</div>
+            <div id="stressRiskZones"></div>
+          </div>
+          <div class="card" style="margin:0">
+            <div class="card-label">Parameter Sensitivity</div>
+            <div id="stressSensitivity"></div>
+            <div style="font-size:.7rem;color:var(--muted);margin-top:10px">% influence on σ_residual (literature — wire-laser DED)</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-label">Thermal Model Insights</div>
+          <div id="stressThermalInsight" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px"></div>
+        </div>
+      </div><!-- /stressResults -->
+
+      <!-- Empty state -->
+      <div id="stressEmpty" class="card">
+        <div class="stress-empty">
+          Set parameters above and click <strong>Run Simulation</strong> to compute residual stress and distortion predictions.
+        </div>
+      </div>
+
+    </div><!-- /sec-stress body -->
+  </div><!-- /sec-stress collapse -->
 
   </div><!-- /page-preprint -->
 
@@ -1161,6 +1266,57 @@ input::placeholder { color: var(--muted); }
     </div>
   </div>
 
+  <!-- compat stubs for JS that refs overlay/mesh/anim elements -->
+  <div style="display:none">
+    <div id="sec-mesh-collapse"></div><div id="sec-mesh"></div>
+    <div id="overlayCard"></div><iframe id="overlayFrame"></iframe><a id="linkOverlay"></a>
+    <div id="animCard"></div><iframe id="animFrame"></iframe><a id="linkAnim"></a>
+    <div id="meshCard"></div><iframe id="meshFrame"></iframe><a id="linkMesh"></a>
+    <div id="meshEmptyState"></div>
+  </div>
+
+  <!-- compat stubs for JS that refs stress/sensitivity hidden elements -->
+  <div style="display:none">
+    <div id="sec-stress-layer-collapse"></div>
+    <div id="sec-stress-layer"></div>
+    <div id="stressRunBtn"></div>
+    <div id="stressStatus"></div>
+    <div id="stressLoadFromAnalysisBtn"></div>
+    <div id="stressResults"></div>
+    <div id="stressLayerChart"></div>
+    <div id="stressEmpty"></div>
+    <div id="stressStatStrip"></div>
+    <div id="stressDeltaChart"></div>
+    <div id="stress3dBox"><div id="stress3dPlot"></div></div>
+    <div id="stressRiskZones"></div>
+    <div id="stressSensitivity"></div>
+    <div id="stressThermalInsight"></div>
+    <div id="stressGoNogo"></div>
+    <select id="stressMaterialPreset" onchange="stressLoadPreset(this.value)">
+      <option value="SS316L">Stainless Steel 316L</option>
+      <option value="Ti64">Titanium Ti-6Al-4V</option>
+      <option value="IN625">Inconel 625</option>
+      <option value="H13">H13 Tool Steel</option>
+      <option value="ER70S6">ER70S-6 Mild Steel</option>
+      <option value="Cu">Copper CW004A</option>
+      <option value="custom">Custom…</option>
+    </select>
+    <input type="number" id="sE" value="193"><input type="number" id="sYield" value="310">
+    <input type="number" id="sAlpha" value="16.0"><input type="number" id="sK" value="16">
+    <input type="number" id="sRho" value="7980"><input type="number" id="sCp" value="500">
+    <input type="number" id="sTmelt" value="1375"><input type="number" id="sLaserP" value="1000">
+    <input type="number" id="sScanV" value="10"><input type="number" id="sWireDiam" value="1.2">
+    <input type="number" id="sWireFeed" value="80"><input type="number" id="sLayerH" value="0.5">
+    <input type="number" id="sBeadW" value="2.0"><input type="number" id="sAbsorb" value="0.35">
+    <input type="number" id="sAmb" value="25"><input type="number" id="sDwell" value="5">
+    <input type="number" id="sNumLayers" value="50"><input type="number" id="sWallT" value="5">
+    <div id="sec-fem-collapse"></div>
+    <div id="sec-stress"></div>
+    <div id="chevron-sec-stress-layer"></div>
+  </div>
+
+  <!-- hidden report div kept for JS compat -->
+  <!-- hidden legacy sensor page for JS compat -->
   <!-- ═══ LIVE DASHBOARD PAGE ═════════════════════════════ -->
   <div id="page-live" style="display:none">
     <div class="page-header">
@@ -2885,7 +3041,55 @@ function _femRenderPlotly(voxels, T_max_hint, layerLabel) {
     hovertemplate: 'x=%{x:.1f} y=%{y:.1f} z=%{z:.1f}<br>T=%{marker.color:.0f}°C<extra></extra>'
   });
 
+  // Trace 2: Seam start markers (diamond, colour by temperature risk)
+  const _showSeam = document.getElementById('femShowSeam')?.checked ?? true;
+  if (_showSeam && window._seamData && window._seamData.start_x && window._seamData.start_x.length) {
+    const sd = window._seamData;
+    const melt = window._seamMeltPt || 1400;
+    const seamColors = sd.start_tc.map(t =>
+      t > melt * 0.85 ? '#ff3344' : t > melt * 0.60 ? '#ffaa00' : '#00ff88'
+    );
+    const seamText = sd.start_x.map((_, i) =>
+      `<b>🧵 SEAM START — Layer ${sd.start_layer[i]}</b><br>` +
+      `Temp: ${sd.start_tc[i]}°C<br>` +
+      `Gap from prev layer: ${sd.start_gap[i]} mm<br>` +
+      `Overlap energy: ${sd.start_oe[i]} J/mm`
+    );
+    traces.push({
+      type: 'scatter3d', mode: 'markers',
+      name: 'Seam Start ◆',
+      x: sd.start_x, y: sd.start_y, z: sd.start_z,
+      marker: { symbol: 'diamond', size: 7, color: seamColors,
+                line: { color: '#ffffff', width: 1 }, opacity: 1.0 },
+      text: seamText,
+      hovertemplate: '%{text}<extra></extra>'
+    });
+
+    // Seam end markers (square, purple)
+    const endText = sd.end_x.map((_, i) =>
+      `<b>🧵 SEAM END — Layer ${sd.end_layer[i]}</b><br>Temp: ${sd.end_tc[i]}°C`
+    );
+    traces.push({
+      type: 'scatter3d', mode: 'markers',
+      name: 'Seam End ■',
+      x: sd.end_x, y: sd.end_y, z: sd.end_z,
+      marker: { symbol: 'square', size: 5, color: '#cc44ff',
+                line: { color: '#ffffff', width: 1 }, opacity: 0.85 },
+      text: endText,
+      hovertemplate: '%{text}<extra></extra>'
+    });
+  }
+
   Plotly.react('femPlot', traces, layout, { responsive: true, displayModeBar: false });
+}
+
+// Toggle seam markers — syncs both the card checkbox and the filter-panel checkbox
+function toggleSeamVisibility(show) {
+  const card   = document.getElementById('seamVisToggle');
+  const filter = document.getElementById('femShowSeam');
+  if (card   && card.checked   !== show) card.checked   = show;
+  if (filter && filter.checked !== show) filter.checked = show;
+  if (window._femCurrentVoxels) femApplyFilters();
 }
 
 function femGoToLayer(layerIdx) {
@@ -3024,11 +3228,14 @@ async function runAnalysis() {
         _stressCheckAnalysisData();     // show "Load from Analysis" button if stress page ready
         renderResults(result);
         loadGeometryView(data.job_id);
-        if (result.stress) {
-          document.getElementById('sec-distortion-collapse').style.display = 'block';
-          openSection('sec-distortion');
-          loadSensitivityView(data.job_id);
-        }
+        // Always show these sections after analysis
+        document.getElementById('sec-distortion-collapse').style.display = 'block';
+        document.getElementById('sec-geometry-collapse').style.display   = 'block';
+        document.getElementById('sec-sensitivity-collapse').style.display = 'block';
+        // Show stress section (it exists in the HTML as a real section now)
+        const stressSec = document.getElementById('sec-stress-collapse');
+        if (stressSec) { stressSec.style.display = 'block'; openSection('sec-stress'); }
+        loadSensitivityView(data.job_id);
         _currentJobId = data.job_id;
         // Unified overlay — always show when analysis produces overlay_pts
         const hasOverlay = result.overlay_pts && result.overlay_pts.length > 0;
@@ -3077,6 +3284,12 @@ function renderResults(d) {
   document.getElementById('resultsContent').style.display = 'block';
   document.getElementById('resultsSubtitle').textContent =
     `${d.part_name} \u00b7 ${new Date().toLocaleString()}`;
+
+  // Store seam data for femPlot overlay
+  if (d.seam_analysis && d.seam_analysis.count) {
+    window._seamData    = d.seam_analysis;
+    window._seamMeltPt  = (d.db_materials && (d.db_materials.T0 || d.db_materials.T1) || {}).melting_point || 1400;
+  }
 
   const sg = document.getElementById('statGrid');
   const pt = d.print_time || {};
@@ -3165,6 +3378,47 @@ function renderResults(d) {
                  font-weight:600;text-decoration:none">${l.icon} ${l.label}</a>`).join('')}
       </div>` : '';
     outBar.style.display = links.length ? 'block' : 'none';
+  }
+
+  // ── Seam analysis card ───────────────────────────────────
+  const seamCard = document.getElementById('seamAnalysisCard');
+  if (seamCard && d.seam_analysis && d.seam_analysis.count) {
+    const sa = d.seam_analysis;
+    const riskColor = sa.risk === 'HIGH' ? '#ef4444' : sa.risk === 'MEDIUM' ? '#f59e0b' : '#22c55e';
+    const riskBg    = sa.risk === 'HIGH' ? '#fef2f2' : sa.risk === 'MEDIUM' ? '#fffbeb' : '#f0fdf4';
+    seamCard.innerHTML = `
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+        <span style="font-size:1.1rem">🧵</span>
+        <strong style="font-size:.9rem">Seam Analysis</strong>
+        <span style="margin-left:auto;padding:2px 10px;border-radius:10px;font-size:.72rem;
+              font-weight:700;background:${riskBg};color:${riskColor};border:1px solid ${riskColor}">
+          ${sa.risk} RISK — ${sa.seam_type}
+        </span>
+        <label style="display:flex;align-items:center;gap:5px;font-size:.75rem;color:var(--text2);
+                      cursor:pointer;margin-left:8px;white-space:nowrap">
+          <input type="checkbox" id="seamVisToggle" checked
+                 style="accent-color:var(--accent);width:14px;height:14px"
+                 onchange="toggleSeamVisibility(this.checked)">
+          Show markers
+        </label>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;font-size:.78rem">
+        <div><span style="color:var(--muted)">Layers</span><br><strong>${sa.count}</strong></div>
+        <div><span style="color:var(--muted)">XY Drift</span><br><strong>${sa.xy_drift_mm} mm</strong></div>
+        <div><span style="color:var(--muted)">Avg Gap</span><br><strong>${sa.avg_gap_mm} mm</strong></div>
+        <div><span style="color:var(--muted)">Avg Seam T°</span><br><strong>${sa.avg_temp_C}°C</strong></div>
+      </div>
+      <div style="margin-top:8px;font-size:.74rem;color:var(--muted)">
+        ${sa.seam_type === 'FIXED'
+          ? '⚠️ Seam fixed at same XY for all layers — stress concentration risk. Recommend enabling RANDOM seam in slicer.'
+          : sa.seam_type === 'NEAR-FIXED'
+          ? '⚠️ Seam nearly fixed — moderate stress concentration. Check slicer Seed Position setting.'
+          : '✅ Seam position varies across layers — distributed thermal load, low risk.'}
+        Markers visible in 3D view (◆ start, ■ end).
+      </div>`;
+    seamCard.style.display = 'block';
+  } else if (seamCard) {
+    seamCard.style.display = 'none';
   }
 
   document.getElementById('noReport').style.display = 'none';
