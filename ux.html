@@ -860,6 +860,20 @@ input::placeholder { color: var(--muted); }
     </div>
     <div class="section-body closed" id="sec-distortion">
 
+      <!-- ── 2D Thermal Heatmap (gradient canvas lines) — shown after analysis ── -->
+      <div id="vizHeatmapWrap" style="display:none;margin-bottom:20px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+          <span style="font-size:.85rem;font-weight:600;color:var(--text2)">🌡️ Thermal Heatmap — continuous gradient path per layer</span>
+          <a id="linkHeatmap" target="_blank"
+             style="font-size:.75rem;color:var(--accent);text-decoration:none;padding:3px 10px;
+                    border:1px solid var(--accent);border-radius:4px">Open full screen ↗</a>
+        </div>
+        <iframe id="vizHeatmapFrame" src="" width="100%"
+                style="height:calc(100vh - 160px);min-height:500px;border:none;
+                       border-radius:var(--radius);border:1px solid var(--border);
+                       display:block;background:#ffffff"></iframe>
+      </div>
+
       <!-- Run + status bar -->
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap">
         <button class="btn btn-primary" id="femRunBtn" onclick="runFemSimulation()">
@@ -3229,9 +3243,10 @@ async function runAnalysis() {
         renderResults(result);
         loadGeometryView(data.job_id);
         // Always show these sections after analysis
-        document.getElementById('sec-distortion-collapse').style.display = 'block';
-        document.getElementById('sec-geometry-collapse').style.display   = 'block';
+        document.getElementById('sec-distortion-collapse').style.display  = 'block';
+        document.getElementById('sec-geometry-collapse').style.display    = 'block';
         document.getElementById('sec-sensitivity-collapse').style.display = 'block';
+        openSection('sec-distortion');   // auto-expand so heatmap is visible immediately
         // Show stress section (it exists in the HTML as a real section now)
         const stressSec = document.getElementById('sec-stress-collapse');
         if (stressSec) { stressSec.style.display = 'block'; openSection('sec-stress'); }
@@ -3344,13 +3359,27 @@ function renderResults(d) {
       </div>`).join('');
   }
 
-  if (d.viz_files && d.viz_files['3d']) {
+  if (d.viz_files) {
     const linkCsv = document.getElementById('linkCsv');
-    if (linkCsv) linkCsv.href = API + d.viz_files.csv;
-    const link3d = document.getElementById('link3d');
-    if (link3d) link3d.href = API + d.viz_files['3d'];
-    const vizFrame = document.getElementById('viz3dFrame');
-    if (vizFrame) vizFrame.src = API + d.viz_files['3d'];
+    if (linkCsv && d.viz_files.csv) linkCsv.href = API + d.viz_files.csv;
+
+    // ── 2D Thermal heatmap (gradient canvas) ─────────────────────────────
+    if (d.viz_files.heatmap) {
+      const hmWrap  = document.getElementById('vizHeatmapWrap');
+      const hmFrame = document.getElementById('vizHeatmapFrame');
+      const hmLink  = document.getElementById('linkHeatmap');
+      if (hmWrap)  hmWrap.style.display  = 'block';
+      if (hmFrame) hmFrame.src           = API + d.viz_files.heatmap;
+      if (hmLink)  hmLink.href           = API + d.viz_files.heatmap;
+    }
+
+    // ── 3D Plotly heatmap ─────────────────────────────────────────────────
+    if (d.viz_files['3d']) {
+      const link3d   = document.getElementById('link3d');
+      const vizFrame = document.getElementById('viz3dFrame');
+      if (link3d)   link3d.href   = API + d.viz_files['3d'];
+      if (vizFrame) vizFrame.src  = API + d.viz_files['3d'];
+    }
     if (d.viz_files.pw) {
       const linkPw = document.getElementById('linkPw');
       if (linkPw) linkPw.href = API + d.viz_files.pw;
@@ -3361,8 +3390,9 @@ function renderResults(d) {
   const outBar = document.getElementById('outputFilesBar');
   if (outBar) {
     const links = [];
-    if (d.viz_files && d.viz_files.csv)  links.push({ label:'CSV Data',       icon:'⬇', href: API + d.viz_files.csv,  download: true });
-    if (d.viz_files && d.viz_files['3d'])links.push({ label:'3D Heatmap',     icon:'⬇', href: API + d.viz_files['3d'], download: false });
+    if (d.viz_files && d.viz_files.csv)      links.push({ label:'CSV Data',        icon:'⬇', href: API + d.viz_files.csv,      download: true });
+    if (d.viz_files && d.viz_files.heatmap) links.push({ label:'Thermal Heatmap', icon:'🌡', href: API + d.viz_files.heatmap,  download: false });
+    if (d.viz_files && d.viz_files['3d'])   links.push({ label:'3D View',          icon:'⬇', href: API + d.viz_files['3d'],    download: false });
     if (d.viz_files && d.viz_files.pw)   links.push({ label:'Process Window', icon:'⬇', href: API + d.viz_files.pw,   download: false });
     if (d.viz_files && d.viz_files.anim)    links.push({ label:'Animation',           icon:'⬇', href: API + d.viz_files.anim,    download: false });
     if (d.viz_files && d.viz_files.distort) links.push({ label:'Distortion Animation', icon:'⬇', href: API + d.viz_files.distort, download: false });

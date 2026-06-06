@@ -189,10 +189,31 @@ class _ProgressTee:
         self.s0    = s0
         self.s1    = s1
         self._buf  = ""
-        self._real = sys.stdout   # capture true stdout at construction time
+        # Get the underlying raw stream (before _TeeStdout shim) to avoid recursion.
+        # If sys.stdout is _TeeStdout, its _real is the original stream.
+        shim = sys.stdout
+        self._real = getattr(shim, '_real', shim)
+        # Wrap in UTF-8 if the underlying stream has a non-UTF-8 codec
+        import io as _io
+        enc = getattr(self._real, 'encoding', '') or ''
+        if enc.lower() not in ('utf-8', 'utf8') and hasattr(self._real, 'buffer'):
+            try:
+                self._real = _io.TextIOWrapper(self._real.buffer, encoding='utf-8', errors='replace')
+            except Exception:
+                pass
     def write(self, s: str):
-        try: self._real.write(s)
-        except Exception: pass
+        try:
+            safe_s = _TeeStdout._safe(s, self._real)
+            self._real.write(safe_s)
+        except (UnicodeEncodeError, UnicodeDecodeError) as ue:
+            # Log the problematic string for debugging, then continue
+            try:
+                import logging
+                logging.warning(f'Unicode write error at pos {ue.start}-{ue.end}: {repr(s[max(0,ue.start-20):ue.end+20])}')
+            except Exception:
+                pass
+        except Exception:
+            pass
         self._buf += s
         if "\n" in self._buf:
             parts = self._buf.split("\n")
@@ -209,14 +230,42 @@ class _ProgressTee:
         except Exception: pass
 
 class _TeeStdout:
-    """sys.stdout shim that routes writes to the current thread's _ProgressTee if set."""
-    def __init__(self, real): self._real = real
+    """sys.stdout shim that routes writes to the current thread's _ProgressTee if set.
+    Unicode chars not supported by the terminal codec are silently replaced with '?'
+    rather than raising UnicodeEncodeError."""
+    def __init__(self, real):
+        self._real = real
+
+    @staticmethod
+    def _safe(s: str, stream) -> str:
+        enc = getattr(stream, 'encoding', None) or 'utf-8'
+        if enc.lower() in ('utf-8', 'utf8'):
+            return s   # stream is UTF-8 — no replacement needed
+        try:
+            s.encode(enc)
+            return s
+        except (UnicodeEncodeError, LookupError):
+            return s.encode(enc, errors='replace').decode(enc, errors='replace')
+
     def write(self, s):
         tee = getattr(_tee_local, 'tee', None)
-        return tee.write(s) if tee else self._real.write(s)
+        if tee:
+            # Route to ProgressTee which writes to its own _real (the underlying utf-8 stream)
+            return tee.write(s)
+        try:
+            return self._real.write(self._safe(s, self._real))
+        except Exception:
+            return len(s)
+
     def flush(self):
         tee = getattr(_tee_local, 'tee', None)
-        (tee or self._real).flush()
+        try: (tee or self._real).flush()
+        except Exception: pass
+
+    @property
+    def encoding(self):
+        return 'utf-8'   # always advertise utf-8 so meltio_ded_analyzer doesn't try to re-wrap
+
     def __getattr__(self, name): return getattr(self._real, name)
 
 sys.stdout = _TeeStdout(sys.stdout)   # install once; safe for concurrent threads
@@ -494,16 +543,18 @@ def _run_analysis_job(jid: str, zip_path: str, filename: str, form: dict):
             _tee_local.tee = None
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        _job_stage(jid, "Exporting CSV…", 68)
+        _job_stage(jid, "Exporting CSV…", 66)
         v_csv  = analyzer.generate_csv(ts)
-        _job_stage(jid, "Generating 3D visualisation…", 75)
+        _job_stage(jid, "Generating thermal heatmap…", 70)
+        v_hm   = analyzer.generate_html_heatmap(ts)
+        _job_stage(jid, "Generating 3D visualisation…", 76)
         v_3d   = analyzer.generate_3d_html(ts)
         _job_stage(jid, "Generating process window…", 82)
         v_pw   = analyzer.generate_process_window_html(ts)
         _job_stage(jid, "Generating animation…", 88)
         v_anim = analyzer.generate_animation_html(ts)
         _job_stage(jid, "Generating report…", 94)
-        viz = {"csv": v_csv, "3d": v_3d, "pw": v_pw, "anim": v_anim}
+        viz = {"csv": v_csv, "heatmap": v_hm, "3d": v_3d, "pw": v_pw, "anim": v_anim}
         report_md   = analyzer.generate_report(viz)
         report_path = analyzer.save_report(report_md, ts)
 
@@ -580,6 +631,7 @@ def _run_analysis_job(jid: str, zip_path: str, filename: str, form: dict):
             },
             "viz_files": {
                 "csv":    f"/outputs/{Path(viz['csv']).name}"     if viz.get("csv")     else None,
+                "heatmap":f"/outputs/{Path(viz['heatmap']).name}" if viz.get("heatmap") else None,
                 "3d":     f"/outputs/{Path(viz['3d']).name}"      if viz.get("3d")      else None,
                 "pw":     f"/outputs/{Path(viz['pw']).name}"      if viz.get("pw")      else None,
                 "anim":   f"/outputs/{Path(viz['anim']).name}"    if viz.get("anim")    else None,
@@ -587,7 +639,7 @@ def _run_analysis_job(jid: str, zip_path: str, filename: str, form: dict):
                 "mesh":   f"/outputs/{Path(viz['mesh']).name}"   if viz.get("mesh")    else None,
             },
             "report_path": f"/outputs/{Path(report_path).name}",
-            "report_md": report_md,
+            "report_md": report_md.encode("utf-8", errors="replace").decode("utf-8"),
         }
         if _auto_stress:
             result['stress'] = _auto_stress
@@ -705,8 +757,9 @@ def _run_analysis_job(jid: str, zip_path: str, filename: str, form: dict):
 
     except Exception as e:
         import traceback
-        _job_update(jid, status="error",
-                    error=str(e), trace=traceback.format_exc())
+        _safe_err   = str(e).encode('ascii', errors='replace').decode('ascii')
+        _safe_trace = traceback.format_exc().encode('ascii', errors='replace').decode('ascii')
+        _job_update(jid, status="error", error=_safe_err, trace=_safe_trace)
     finally:
         try: os.unlink(zip_path)
         except Exception: pass
@@ -1543,8 +1596,9 @@ def _run_dashboard_job(jid: str, zip_path: str, tmp_csv_path, filename: str, for
 
     except Exception as e:
         import traceback
-        _job_update(jid, status="error",
-                    error=str(e), trace=traceback.format_exc())
+        _safe_err   = str(e).encode('ascii', errors='replace').decode('ascii')
+        _safe_trace = traceback.format_exc().encode('ascii', errors='replace').decode('ascii')
+        _job_update(jid, status="error", error=_safe_err, trace=_safe_trace)
     finally:
         try: os.unlink(zip_path)
         except Exception: pass
@@ -2191,16 +2245,18 @@ def _run_m600_analysis_job(jid: str, gcode_path: str, filename: str, form: dict)
             _tee_local.tee = None
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        _job_stage(jid, "Exporting CSV…", 68)
+        _job_stage(jid, "Exporting CSV…", 66)
         v_csv  = analyzer.generate_csv(ts)
-        _job_stage(jid, "Generating 3D visualisation…", 75)
+        _job_stage(jid, "Generating thermal heatmap…", 70)
+        v_hm   = analyzer.generate_html_heatmap(ts)
+        _job_stage(jid, "Generating 3D visualisation…", 76)
         v_3d   = analyzer.generate_3d_html(ts)
         _job_stage(jid, "Generating process window…", 82)
         v_pw   = analyzer.generate_process_window_html(ts)
         _job_stage(jid, "Generating animation…", 88)
         v_anim = analyzer.generate_animation_html(ts)
         _job_stage(jid, "Generating report…", 94)
-        viz = {"csv": v_csv, "3d": v_3d, "pw": v_pw, "anim": v_anim}
+        viz = {"csv": v_csv, "heatmap": v_hm, "3d": v_3d, "pw": v_pw, "anim": v_anim}
         report_md   = analyzer.generate_report(viz)
         report_path = analyzer.save_report(report_md, ts)
 
@@ -2277,6 +2333,7 @@ def _run_m600_analysis_job(jid: str, gcode_path: str, filename: str, form: dict)
             },
             "viz_files": {
                 "csv":    f"/outputs/{Path(viz['csv']).name}"     if viz.get("csv")     else None,
+                "heatmap":f"/outputs/{Path(viz['heatmap']).name}" if viz.get("heatmap") else None,
                 "3d":     f"/outputs/{Path(viz['3d']).name}"      if viz.get("3d")      else None,
                 "pw":     f"/outputs/{Path(viz['pw']).name}"      if viz.get("pw")      else None,
                 "anim":   f"/outputs/{Path(viz['anim']).name}"    if viz.get("anim")    else None,
@@ -2284,7 +2341,7 @@ def _run_m600_analysis_job(jid: str, gcode_path: str, filename: str, form: dict)
                 "mesh":   f"/outputs/{Path(viz['mesh']).name}"   if viz.get("mesh")    else None,
             },
             "report_path": f"/outputs/{Path(report_path).name}",
-            "report_md": report_md,
+            "report_md": report_md.encode("utf-8", errors="replace").decode("utf-8"),
             # M600-specific extras
             "platform": "M600",
             "gcode_header": analyzer.header_meta,
@@ -2351,8 +2408,12 @@ def shutdown():
 
 if __name__ == "__main__":
     import socket, io
-    if hasattr(sys.stdout, 'buffer'):
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    # Force UTF-8 stdout/stderr on Windows (charmap / cp1252 can't encode α, β, ✅, 🧵).
+    # Done only in __main__ to avoid breaking pytest's stdout capture.
+    for _stream, _attr in [(sys.stdout, 'stdout'), (sys.stderr, 'stderr')]:
+        if hasattr(_stream, 'buffer') and getattr(_stream, 'encoding', '').lower() != 'utf-8':
+            setattr(sys, _attr,
+                    io.TextIOWrapper(_stream.buffer, encoding='utf-8', errors='replace'))
     port = int(os.environ.get("PORT", 5050))
     local_ip = socket.gethostbyname(socket.gethostname())
     print("Meltio DED Analyzer")

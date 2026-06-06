@@ -78,15 +78,20 @@ def run_auto_stress(analyzer) -> dict | None:
         # Use material DB's absorption if available, else default
         absorb = db_mat_T0.get('absorption_450nm', 0.35)
 
+        # Compute actual Z extent from thermal_data (all layers present)
+        zs = [d['z'] for d in all_td]
+        z_ext_mm = max(zs) - min(zs) if zs else 0.0
+
         payload = {
             'material': {
-                'E_GPa':     mech.get('E_GPa',     200),
-                'yield_MPa': mech.get('yield_MPa', 400),
-                'alpha_1e6': mech.get('alpha_1e6', db_mat_T0.get('CTE', 12.0)),
-                'k':         db_mat_T0.get('thermal_conductivity', 20),
-                'density':   db_mat_T0.get('density', 7800),
-                'Cp':        db_mat_T0.get('specific_heat', 490),
-                'T_melt':    db_mat_T0.get('melting_point', 1400),
+                'E_GPa':        mech.get('E_GPa',     200),
+                'yield_MPa':    mech.get('yield_MPa', 400),
+                'alpha_1e6':    mech.get('alpha_1e6', db_mat_T0.get('CTE', 12.0)),
+                'k':            db_mat_T0.get('thermal_conductivity', 20),
+                'density':      db_mat_T0.get('density', 7800),
+                'Cp':           db_mat_T0.get('specific_heat', 490),
+                'T_melt':       db_mat_T0.get('melting_point', 1400),
+                'display_name': mat_name,
             },
             'process': {
                 'laser_power':     laser_p_f,
@@ -102,6 +107,9 @@ def run_auto_stress(analyzer) -> dict | None:
             'geometry': {
                 'num_layers':     analyzer.num_layers or 50,
                 'wall_thickness': wall_t_mm,
+                # Pass true Z extent so _analyse_toolpath can detect helix/spiral
+                # even from a sparse waypoint sample (2000 pts from 127k total).
+                'z_extent_mm':    z_ext_mm,
             },
             'waypoints': [
                 {'x': d['x'], 'y': d['y'], 'z': d['z'], 'layer': d['layer_num']}

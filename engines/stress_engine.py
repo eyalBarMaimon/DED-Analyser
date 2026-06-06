@@ -128,17 +128,33 @@ def _analyse_toolpath(waypoints: list) -> dict:
         dominant_dir = (math.cos(rad), math.sin(rad))
 
     # Pattern detection
-    # Helix: Z span within a single layer > 3× z_per_layer
+    # Helix criterion 1: Z span within a single layer > 3× z_per_layer (classic spiral)
     z_spans_in_layer = []
     for pts in list(by_layer.values())[:10]:
         if len(pts) > 1:
             z_spans_in_layer.append(max(pts) - min(pts))
     avg_inlayer_zspan = sum(z_spans_in_layer) / len(z_spans_in_layer) if z_spans_in_layer else 0
 
+    # Helix/spiral criterion 2:
+    # A true helix/coil has many sequential layers that each advance Z by a
+    # small pitch — much less than the nominal deposition height.
+    # Detection: z_per_layer (from toolpath) < 50 % of the nominal layer height
+    # parameter AND more than 200 layers → the part spirals around an axis.
+    # Example: Coil230426V1 — 1927 layers, z_per_layer ≈ 0.24 mm, h_layer = 0.6 mm.
+    n_dep_layers  = len(by_layer)
+    # Nominal h_layer from geometry (fallback 0.6 mm)
+    h_layer_nom   = max(z_per_layer, 0.05)   # best estimate from actual toolpath
+    # Re-examine: compare z_per_layer to mean layer spacing assuming straight build
+    straight_z_per_layer = z_ext / max(n_dep_layers - 1, 1)
+    # If the per-file z increment is much smaller than what a straight build expects,
+    # the part winds around (spiral / helix)
+    is_spiral = (n_dep_layers > 200 and z_ext > 10 and
+                 straight_z_per_layer < 0.4)  # <0.4 mm/layer = tight helix pitch
+
     coil_radius_mm = 0.0
-    if z_per_layer > 0 and avg_inlayer_zspan > 3 * z_per_layer:
+    if (z_per_layer > 0 and avg_inlayer_zspan > 3 * z_per_layer) or is_spiral:
         pattern = 'helix'
-        radii = [math.sqrt((x - cx)**2 + (y - cy)**2) for x, y in zip(xs[:200], ys[:200])]
+        radii = [math.sqrt((x - cx)**2 + (y - cy)**2) for x, y in zip(xs[:500], ys[:500])]
         coil_radius_mm = sum(radii) / len(radii) if radii else 0.0
     else:
         # Raster: dominant direction changes sign frequently (back-and-forth)
@@ -396,6 +412,10 @@ def compute_stress(data: dict, _sweep: bool = True, tolerances: dict = None) -> 
         geom       = data.get('geometry', {})
         num_layers = int(geom.get('num_layers',       50))
         wall_t     = float(geom.get('wall_thickness',  5)) / 1000
+        # z_extent_mm: true build height passed explicitly from base_job when a
+        # full thermal_data scan is available (avoids helix mis-detection from
+        # sparse 2000-point waypoint sample sent to compute_stress).
+        z_extent_hint_mm = float(geom.get('z_extent_mm', 0.0))
         waypoints  = data.get('waypoints', [])
 
         E       = E_GPa * 1e9
@@ -412,7 +432,24 @@ def compute_stress(data: dict, _sweep: bool = True, tolerances: dict = None) -> 
             z_per_layer_mm = tp['z_per_layer']
         else:
             z_per_layer_mm = h_layer * 1000   # mm (h_layer is already in m)
-        h_layer_actual   = z_per_layer_mm / 1000
+        h_layer_actual = z_per_layer_mm / 1000
+
+        # Override pattern to helix when the true z_extent (from full thermal data)
+        # indicates a spiral build — the sparse waypoint sample may have missed it.
+        if z_extent_hint_mm > 0 and pattern != 'helix':
+            hint_straight = z_extent_hint_mm / max(num_layers - 1, 1)
+            if num_layers > 200 and z_extent_hint_mm > 10 and hint_straight < 0.4:
+                pattern = 'helix'
+                # Re-derive coil radius from waypoints if not already set
+                if tp['coil_radius_mm'] == 0.0 and waypoints:
+                    dep_wps = waypoints
+                    cx = sum(w['x'] for w in dep_wps) / len(dep_wps)
+                    cy = sum(w['y'] for w in dep_wps) / len(dep_wps)
+                    import math as _m
+                    radii = [_m.sqrt((w['x']-cx)**2+(w['y']-cy)**2) for w in dep_wps[:500]]
+                    coil_radius_m = (sum(radii)/len(radii)/1000) if radii else 0.0
+                else:
+                    coil_radius_m = tp['coil_radius_mm'] / 1000
 
         # ── Thermal diffusivity & Rosenthal cooling rate ─────────────────
         alpha_diff  = k_therm / (rho * Cp)
@@ -424,11 +461,26 @@ def compute_stress(data: dict, _sweep: bool = True, tolerances: dict = None) -> 
         # Reference calibration: 1500W, 10mm/s, 2mm bead (r=1mm), SS316L
         # → dTdt ≈ 15000 K/s at melt-pool edge (high, but typical for fine-mesh DED)
         # Literature f_c for wire-DED: 0.03–0.08 (Colegrove 2017, Williams 2016)
+        # Per annealing-corrected ISM literature (DOI 10.1016/j.cirpj.2022.08.005):
+        # effective retained strain is 0.3–0.7 for Ti-6Al-4V, 0.7–0.9 for 316L.
+        # The 0.015–0.095 raw range × material annealing factor achieves the same.
         # Use log-scaling (not sqrt) to compress the wide dTdt range
         dTdt_ref = 15000.0   # K/s at reference conditions
         f_c_base = 0.045
         f_c      = f_c_base * (math.log10(max(dTdt, 10)) / math.log10(max(dTdt_ref, 100)))
         f_c      = max(0.015, min(f_c, 0.095))
+
+        # Material-class annealing factor: higher interpass temps cause more stress
+        # relief per thermal cycle.  Ti-6Al-4V has lower recovery temperature than
+        # austenitic steels → more relief per reheating pass.
+        # Values derived from ISM annealing study (DOI 10.1016/j.cirpj.2022.08.005).
+        mat_name_lower = mat.get('display_name', '').lower()
+        if 'ti' in mat_name_lower or 'titanium' in mat_name_lower:
+            annealing_factor = 0.55   # Ti-6Al-4V: ~45 % stress relief per reheating
+        elif 'inconel' in mat_name_lower or 'in7' in mat_name_lower or 'in6' in mat_name_lower:
+            annealing_factor = 0.80   # Inconel: moderate recovery
+        else:
+            annealing_factor = 0.85   # 316L / default austenitic steel
 
         V_dot         = max(math.pi * (wire_d / 2)**2 * wire_v, 1e-15)
         ETA_SUPERHEAT = 0.20
@@ -482,26 +534,40 @@ def compute_stress(data: dict, _sweep: bool = True, tolerances: dict = None) -> 
             # Thin-wall amplification
             thin_factor = 1.20 if wall_t < 0.004 else 1.0
 
-            # Per-layer increment = fraction of sigma_pass that becomes locked residual
-            # scan_factor amplifies transverse direction (raster effect)
-            sigma_inc  = sigma_pass * base_factor * thin_factor * scan_factor * 0.65
+            # Per-layer increment = fraction of sigma_pass that becomes locked residual.
+            # annealing_factor accounts for stress relief from reheating of prior layers
+            # by subsequent passes (ISM annealing correction, DOI 10.1016/j.cirpj.2022.08.005).
+            # Without this, ISM over-predicts residual stress by ~69 %; with it, error ~32 %.
+            sigma_inc  = sigma_pass * base_factor * thin_factor * scan_factor * 0.65 * annealing_factor
             sigma_cum  = sigma_cum * (1.0 - relief) + sigma_inc
             sigma_cum  = min(sigma_cum, sigma_Y)
 
             sigma_total = min(sigma_cum + sigma_bend_base, sigma_Y)
 
-            # Bending distortion — ISM cantilever beam (Luo & Ueda 1993, eq. 12)
-            # δ = 3·ε_in·t_layer·h² / wall_t²
-            # t_layer = deposited layer thickness, h = current build height, wall_t = wall thickness
-            # (previous formula had missing t_layer and wrong wall_t power)
-            delta_bend_mm = (3 * eps_in * h_layer_actual * h_cum_m**2
-                             / max(wall_t, 0.001)**2) * 1000
+            # Distortion model — geometry-dependent:
+            #
+            # HELIX/COIL: The cantilever ISM formula δ=3·ε·h·H²/wall_t² is invalid
+            # because the circumferential path self-constrains axial bending.
+            # Instead use radial expansion of a thin ring under biaxial residual stress:
+            #   δ_radial = ε_in · coil_radius
+            # This gives mm-scale radial growth per turn, which is physically correct.
+            # Gravity sag uses the coil radius as the effective cantilever arm.
+            #
+            # CONTOUR/RASTER (wall or block): standard ISM cantilever bending.
+            # Cap effective height at 200 mm to avoid runaway h² for tall parts;
+            # beyond that, successive layers partially relax prior-layer bending.
+            if is_helix and coil_radius_m > 0:
+                # Radial distortion of coil (circumferential inherent strain)
+                delta_bend_mm = eps_in * coil_radius_m * 1000          # mm
+                delta_sag_mm  = _gravity_sag(rho, 9.81, coil_radius_m, max(w_bead, 0.002), E)
+            else:
+                # Cantilever bending — cap effective height at 200 mm (0.2 m)
+                h_eff_m = min(h_cum_m, 0.200)
+                delta_bend_mm = (3 * eps_in * h_layer_actual * h_eff_m**2
+                                 / max(wall_t, 0.001)**2) * 1000
+                delta_sag_mm  = _gravity_sag(rho, 9.81, h_cum_m, wall_t, E)
 
-            # Gravity sag (self-weight of dense material)
-            delta_sag_mm  = _gravity_sag(rho, 9.81, h_cum_m, wall_t, E)
-
-            # Total distortion = bending + sag (additive when same direction, else RSS)
-            # For vertical build, sag is lateral and bending is also lateral → additive
+            # Total distortion (additive for same failure direction)
             delta_mm = delta_bend_mm + delta_sag_mm
 
             ratio = sigma_total / sigma_Y
@@ -721,12 +787,13 @@ def compute_stress(data: dict, _sweep: bool = True, tolerances: dict = None) -> 
             'go_nogo': go_nogo,
             'geometry_type': pattern,
             'toolpath': {
-                'pattern':       pattern,
-                'dominant_dir':  dominant_dir,
-                'scan_aniso':    round(f_trans, 3),
-                'z_per_layer':   round(z_per_layer_mm, 3),
-                'f_c_effective': round(f_c, 4),
-                'cooling_rate':  round(dTdt, 0),
+                'pattern':          pattern,
+                'dominant_dir':     dominant_dir,
+                'scan_aniso':       round(f_trans, 3),
+                'z_per_layer':      round(z_per_layer_mm, 3),
+                'f_c_effective':    round(f_c, 4),
+                'cooling_rate':     round(dTdt, 0),
+                'annealing_factor': round(annealing_factor, 2),
             },
             'summary': {
                 'max_sigma_MPa':    round(max_sigma, 1),
@@ -739,6 +806,7 @@ def compute_stress(data: dict, _sweep: bool = True, tolerances: dict = None) -> 
                 'dT_actual_C':      round(dT_actual, 0),
                 'epsilon_in_ue':    round(eps_in * 1e6, 1),
                 'relief_pct':       round(relief * 100, 1),
+                'annealing_pct':    round((1.0 - annealing_factor) * 100, 0),
                 'high_risk_layers': high_risk,
                 'wall_t_mm':        round(wall_t * 1000, 1),
             },

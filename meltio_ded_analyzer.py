@@ -8,13 +8,27 @@ Includes thermal analysis and heat map visualizations.
 import os
 import sys
 import re
+
+# Ensure stdout can handle Unicode (α, β, ✅, etc.) on Windows cp1252 terminals.
+# Applied at module level so it works whether called from CLI or Flask.
+import io as _io
+if hasattr(sys.stdout, 'buffer') and getattr(sys.stdout, 'encoding', 'utf-8').lower() not in ('utf-8', 'utf8'):
+    try:
+        sys.stdout = _io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+if hasattr(sys.stderr, 'buffer') and getattr(sys.stderr, 'encoding', 'utf-8').lower() not in ('utf-8', 'utf8'):
+    try:
+        sys.stderr = _io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 import json
 import math
 import zipfile
 import csv
 from pathlib import Path
 from datetime import datetime
-from collections import defaultdict
+from collections import defaultdict, Counter
 from typing import Dict, List, Optional, Tuple
 
 # ─────────────────────────────────────────────
@@ -163,7 +177,7 @@ class MeltioDEDAnalyzer:
         move_re = re.compile(
             r'MoveL\s+\[\[(-?\d+\.?\d*),\s*(-?\d+\.?\d*),\s*(-?\d+\.?\d*)\]'
             r'(?:[^\[]*\[[^\]]*\]){3}'
-            r'\],\[(\d+\.?\d*),'
+            r'\],\[([-\d.]+),'
         )
         signal_re     = re.compile(r'Set[DI]O[^,]*,?\s*(DO_ENGINE_\d+),?\s*(\d)')
         comment_re    = re.compile(r'!(.*?)$', re.MULTILINE)
@@ -497,13 +511,42 @@ class MeltioDEDAnalyzer:
             denom_nh = h_s * math.sqrt(math.pi * alpha * v_ms) * (beam_d_m ** 1.5)
             norm_H = (absorption * laser_W) / denom_nh if denom_nh > 0 else 0.0
 
-            # (c) Melt pool depth estimate — 1D Rosenthal semi-infinite solid
-            #     depth = A·P / (π·k·ΔT_melt)  [in metres → converted to mm]
-            delta_T_melt = max(T_liq - T_current, 1.0)
-            melt_depth_mm = min(
-                (absorption * laser_W) / (math.pi * k_SI * delta_T_melt) * 1e3,
-                h_mm * 3.0    # cap at 3× layer height
-            )
+            # (c) Melt pool geometry — Eagar-Tsai (1983) Gaussian surface source
+            #
+            # Rosenthal (point source) gives 20-50 % error for DED beam spots >1 mm
+            # (Honarmandi 2021, DOI 10.1016/j.addma.2021.102300; Parida 2025).
+            # Eagar-Tsai replaces the singularity with a 2-D Gaussian heat flux of
+            # radius σ (= beam_d/2), giving ~10-15 % error for width in conduction mode.
+            #
+            # Closed-form approximation (Hann 2011 / Hunt 1984 low-Pe limit):
+            #   Pe = v·σ / (2·α)               (thermal Péclet number)
+            #   For Pe < 5  (DED typical): width dominated by diffusion + beam spread
+            #     W ≈ 2·σ·√(1 + A·P / (π·k·σ·ΔT_melt))       [Gaussian half-width, m]
+            #   Depth (conduction-mode assumption, semi-circular pool):
+            #     D ≈ W / 2    (safe lower bound; convection elongates pool)
+            #     Capped at Rosenthal depth as upper bound for physical consistency.
+            #
+            # NOTE: For the Meltio coaxial multi-beam geometry an annular heat source
+            # (Zapata 2023, DOI 10.1063/6.0002614) would be more accurate, but requires
+            # FEM and cannot be computed analytically here.
+            delta_T_melt  = max(T_liq - T_current, 1.0)
+            sigma_m        = beam_d_m / 2.0                    # Gaussian 1-σ radius [m]
+
+            # Eagar-Tsai width (conduction mode, low-Pe closed-form)
+            Pe_et = v_ms * sigma_m / (2.0 * max(alpha, 1e-9))
+            # Dimensionless heat input normalised by beam radius conduction path
+            Q_star = (absorption * laser_W) / (math.pi * k_SI * sigma_m * delta_T_melt)
+            # Half-width of melt pool [m] — from Gaussian source energy balance
+            et_half_width_m = sigma_m * math.sqrt(max(1.0 + Q_star, 1.0))
+            # Péclet correction: at higher Pe the pool elongates and narrows slightly
+            pe_corr = 1.0 / (1.0 + 0.3 * Pe_et)              # empirical, valid Pe<5
+            melt_width_mm  = round(et_half_width_m * 2.0 * pe_corr * 1e3, 3)  # full width [mm]
+
+            # Depth: conduction-mode assumption (semi-circular) capped by Rosenthal
+            rosenthal_depth_m = (absorption * laser_W) / (math.pi * k_SI * delta_T_melt)
+            et_depth_m        = min(et_half_width_m * pe_corr,  # semi-circular lower bound
+                                    rosenthal_depth_m)           # Rosenthal upper bound
+            melt_depth_mm  = round(min(et_depth_m * 1e3, h_mm * 3.0), 3)
             melt_fuse_ratio = melt_depth_mm / h_mm if h_mm > 0 else 0.0
 
             # (d) Thermal gradient G [K/m] and solidification rate R [m/s]
@@ -516,10 +559,57 @@ class MeltioDEDAnalyzer:
             pw_mat             = mat.get("process_window", {})
             solidif_range      = T_liq - mat.get("T_solidus", T_liq - 50)
             lof_risk           = VED < pw_mat.get("VED_lof_min", 25)
+            # norm_H keyhole threshold >25 validated for LPBF (spot 50–300 µm) only.
+            # Wire-laser DED uses 1–3 mm spots → norm_H is structurally lower;
+            # keyhole-like vapour dynamics still occur but at different thresholds.
+            # Flag is retained as indicative; label caveat shown in report.
             keyhole_risk       = norm_H > 25.0
+            # Wire-DED stubbing risk: VED well below LOF minimum → wire won't melt cleanly.
+            # Threshold 60 % of LOF minimum is empirical (McLain 2024, DOI 10.3390/ma17215311).
+            stubbing_risk      = VED < pw_mat.get("VED_lof_min", 25) * 0.6
             lof_depth_risk     = melt_fuse_ratio < 1.1
+            # Eagar-Tsai width vs nominal bead width: ratio < 0.7 → bead too narrow (poor overlap)
+            # ratio > 2.0 → excessive melt pool spread (distortion risk)
+            melt_width_ratio   = round(melt_width_mm / max(w_mm, 0.1), 3)
             cracking_score     = round(min(1.0,
                                     (cooling_rate_Ks / 1e5) * (solidif_range / 100.0)), 3)
+
+            # Ti-6Al-4V phase prediction from cooling rate (3-level, literature-validated).
+            # Thresholds: Ahmed & Rack 1998 (onset 410 K/s); Kenel 2017 synchrotron
+            # (full martensite ~4 500 K/s); Xiao 2025 Gleeble (~7 000 K/s).
+            # 410 K/s = martensite ONSET, not full martensite (common misconception).
+            mat_name = mat.get("display_name", "")
+            mat_name_lc = mat_name.lower()
+            if "Ti" in mat_name or "ti" in mat_name_lc:
+                if cooling_rate_Ks > 4500:
+                    ti_phase = "α′ martensite (full)"
+                elif cooling_rate_Ks > 410:
+                    ti_phase = "α′ martensite (onset)"
+                elif cooling_rate_Ks > 20:
+                    ti_phase = "α+β Widmanstätten"
+                else:
+                    ti_phase = "α+β lamellar"
+                # Alpha lath width proxy for Ti-6Al-4V (Eliseeva 2024, DOI 10.3390/ma17133307).
+                # lath_width [µm] ≈ 0.23 + 1.27 × exp(−cooling_rate / 3000)
+                # Validated range: 0.23 µm (fast, 300s dwell) – 0.49 µm (no dwell).
+                # Extended empirically: coarser at very low cooling rates (slow layers).
+                if cooling_rate_Ks > 0:
+                    lath_width_um = round(0.23 + 1.27 * math.exp(-cooling_rate_Ks / 3000.0), 3)
+                else:
+                    lath_width_um = None
+            else:
+                ti_phase      = None
+                lath_width_um = None
+
+            # PDAS for 316L stainless steel (Sing et al. 2022, PMC9625081).
+            # λ₁ [nm] = 80 × Ṫ^{-0.333},  Ṫ = G × R [K/s]
+            # Valid for austenitic stainless steels in DED (Ṫ range 10³–10⁵ K/s).
+            # Ti-6Al-4V does NOT form classical dendrites → PDAS not applicable.
+            if ("316" in mat_name or "stainless" in mat_name_lc or "steel" in mat_name_lc) \
+                    and cooling_rate_Ks > 0:
+                pdas_nm = round(80.0 * (cooling_rate_Ks ** -0.333), 1)
+            else:
+                pdas_nm = None
 
             # (f) Seam metrics — extra energy & risk at layer start/end points
             is_seam_start = wp.get("is_seam_start", False)
@@ -570,6 +660,8 @@ class MeltioDEDAnalyzer:
                 "VED":                 round(VED,          2),
                 "norm_H":              round(norm_H,       3),
                 "melt_depth_mm":       round(melt_depth_mm, 3),
+                "melt_width_mm":       round(melt_width_mm, 3),
+                "melt_width_ratio":    melt_width_ratio,
                 "melt_fuse_ratio":     round(melt_fuse_ratio, 3),
                 "G_Km":                round(G,            1),
                 "R_ms":                round(R,            5),
@@ -577,9 +669,13 @@ class MeltioDEDAnalyzer:
                 "G_over_R":            round(G_over_R,     1),
                 "lof_risk":            lof_risk,
                 "keyhole_risk":        keyhole_risk,
+                "stubbing_risk":       stubbing_risk,
                 "overheat_risk":       False,   # updated after FDM residual-temp pass
                 "lof_depth_risk":      lof_depth_risk,
                 "cracking_score":      cracking_score,
+                "ti_phase":            ti_phase,
+                "lath_width_um":       lath_width_um,
+                "pdas_nm":             pdas_nm,
                 "t_elapsed":           round(t_elapsed, 3),
                 # ── seam metrics ──────────────────────────────────────────
                 "is_seam_start":       is_seam_start,
@@ -916,6 +1012,55 @@ class MeltioDEDAnalyzer:
                 print(f"   🧵 Seam gap (inter-layer): avg={avg_gap:.2f} mm, max={max_gap:.2f} mm")
                 print(f"   🧵 Seam avg temp: {avg_seam_t:.0f} °C")
 
+            # ── Interpass temperature & dwell analysis ────────────────────
+            # For each layer-start waypoint, estimate dwell time needed to
+            # cool to the material interpass target before depositing next layer.
+            # T_target: Ti-6Al-4V = 400°C (WAAM convention, not wire-laser validated);
+            #           316L = 300°C; others = 350°C.
+            # Formula: t_dwell = τ_bead × ln((T_current − T_amb) / (T_target − T_amb))
+            # Capped at 600 s to avoid infinite waits on cold parts.
+            # (Eliseeva 2024, DOI 10.3390/ma17133307)
+            layer_starts = {}
+            for d in self.thermal_data:
+                ln = d["layer_num"]
+                if ln not in layer_starts:
+                    layer_starts[ln] = d   # first waypoint of each layer
+
+            dwell_warnings = []
+            for ln, d in sorted(layer_starts.items()):
+                mat_n = d.get("material", "")
+                T_amb = float(self.user.get("ambient_temp", 25))
+                tau   = d.get("tau_cool_s", 30.0)
+                T_cur = d.get("temp_C_final", d.get("temp_C", T_amb))
+                if "Ti" in mat_n or "ti" in mat_n.lower():
+                    T_target = 400.0
+                    note = "Ti-6Al-4V target (WAAM convention; not wire-laser validated)"
+                elif "316" in mat_n or "stainless" in mat_n.lower():
+                    T_target = 300.0
+                    note = "316L target"
+                else:
+                    T_target = 350.0
+                    note = "default target"
+                if T_cur > T_target and tau > 0:
+                    ratio = max((T_cur - T_amb) / max(T_target - T_amb, 1.0), 1.001)
+                    t_dwell_needed = min(tau * math.log(ratio), 600.0)
+                    current_dwell  = float(self.user.get("min_layer_dwell", 5.0))
+                    if t_dwell_needed > current_dwell * 1.5:
+                        dwell_warnings.append((ln, T_cur, T_target, t_dwell_needed, note))
+
+            if dwell_warnings:
+                print(f"   ⏱️  Interpass dwell warnings ({len(dwell_warnings)} layers exceed target):")
+                for ln, T_cur, T_tgt, t_needed, note in dwell_warnings[:5]:
+                    print(f"      Layer {ln:4d}: T={T_cur:.0f}°C → target {T_tgt:.0f}°C "
+                          f"({note}) needs ~{t_needed:.0f}s dwell")
+                if len(dwell_warnings) > 5:
+                    print(f"      … and {len(dwell_warnings)-5} more layers")
+            else:
+                print(f"   ✅ Interpass temperatures within target on all layers")
+
+            # Store dwell summary on instance for HTML report
+            self._dwell_warnings = dwell_warnings
+
     # ─── STEP 5a: HTML COLOR-CODED HEATMAP ─────────────────────────────────
 
     def generate_html_heatmap(self, timestamp: str) -> str:
@@ -931,15 +1076,31 @@ class MeltioDEDAnalyzer:
             by_layer[d["layer_num"]].append(d)
         layers = sorted(by_layer.keys())
 
-        # Max points per layer in heatmap (canvas render limit)
-        MAX_HM_PTS = max(1, 4000 // max(len(layers), 1))
-        MAX_HM_PTS = min(MAX_HM_PTS, 150)
+        # Points per layer for the gradient-line canvas.
+        # Goal: ≥ 60 pts/layer so the gradient path is smooth and readable.
+        # Budget cap: 4 MB of JS ≈ 44_000 serialised points (≈ 90 chars each).
+        # For models with many short layers (e.g. coil/helix, 1927 layers × 66 pts),
+        # every layer already has ≤ 66 pts → step=1 → include all points; if the
+        # total still exceeds budget we sub-sample globally (step over layers array).
+        n_layers       = max(len(layers), 1)
+        MAX_TOTAL_PTS  = 44_000   # hard ceiling on total serialised points (~4 MB)
+        pts_per_layer  = max(60, MAX_TOTAL_PTS // n_layers)
+        pts_per_layer  = min(pts_per_layer, 300)
+
+        # If total points after per-layer sampling still exceeds budget,
+        # sub-sample layers themselves (keep every Nth layer).
+        # This preserves full detail on visible layers while keeping file small.
+        # Minimum 200 layers always included to maintain animation smoothness.
+        avg_pts   = sum(len(by_layer[ln]) for ln in layers) / n_layers
+        total_est = n_layers * min(avg_pts, pts_per_layer)
+        layer_step = max(1, int(total_est / MAX_TOTAL_PTS))
+        sampled_layers = layers[::layer_step] if layer_step > 1 else layers
 
         # Build per-layer JS arrays
         layer_data_js = []
-        for ln in layers:
+        for ln in sampled_layers:
             pts = by_layer[ln]
-            step = max(1, len(pts) // MAX_HM_PTS)
+            step = max(1, len(pts) // pts_per_layer)
             arr = []
             for p in pts[::step]:
                 color = heat_color(p["temp_C"], t_min, t_max)
@@ -947,12 +1108,18 @@ class MeltioDEDAnalyzer:
                     f'{{x:{p["x"]:.2f},y:{p["y"]:.2f},z:{p["z"]:.2f},'
                     f'speed:{p["speed"]},material:"{p["material"]}",'
                     f'tc:{p["temp_C"]},cv:{p["curvature_deg"]},'
-                    f'hi:{p["heat_index"]:.4f},color:"{color}"}}'
+                    f'hi:{p["heat_index"]:.4f},'
+                    f'ved:{p.get("VED",0):.1f},'
+                    f'lof:{"true" if p.get("lof_risk") else "false"},'
+                    f'kh:{"true" if p.get("keyhole_risk") else "false"},'
+                    f'stub:{"true" if p.get("stubbing_risk") else "false"},'
+                    f'mw:{p.get("melt_width_mm",0):.2f},'
+                    f'color:"{color}"}}'
                 )
             layer_data_js.append(f'[{",".join(arr)}]')
 
-        layers_js = f'[{",".join(layer_data_js)}]'
-        layers_list = str(layers)
+        layers_js   = f'[{",".join(layer_data_js)}]'
+        layers_list = str(sampled_layers)   # matches layer_data_js order
 
         # Build seam markers data (start = seam point, stop = layer end)
         markers_data = []
@@ -965,8 +1132,10 @@ class MeltioDEDAnalyzer:
                     "layer":    ln,
                     "start_x":  sp["x"],
                     "start_y":  sp["y"],
+                    "start_z":  sp["z"],
                     "stop_x":   ep["x"],
                     "stop_y":   ep["y"],
+                    "stop_z":   ep["z"],
                     "start_tc": sp["temp_C"],
                     "stop_tc":  ep["temp_C"],
                     "gap_mm":   sp.get("seam_gap_mm", 0.0),
@@ -978,66 +1147,90 @@ class MeltioDEDAnalyzer:
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Heat Map — {self.user['part_name']}</title>
 <style>
-  body {{ font-family: 'Segoe UI', sans-serif; background:#1a1a2e; color:#eee; margin:0; padding:20px; }}
-  h1 {{ color:#00d4ff; font-size:1.4rem; margin-bottom:4px; }}
-  .subtitle {{ color:#aaa; font-size:.85rem; margin-bottom:16px; }}
-  .controls {{ display:flex; gap:16px; align-items:center; margin-bottom:12px; flex-wrap:wrap; }}
-  label {{ font-size:.85rem; color:#ccc; }}
-  input[type=range] {{ width:220px; accent-color:#00d4ff; }}
-  canvas {{ border:1px solid #333; background:#f5f7fb; border-radius:6px; cursor:crosshair; }}
-  #tooltip {{ position:fixed; background:rgba(0,0,0,.85); border:1px solid #444;
-               padding:8px 12px; border-radius:6px; font-size:.78rem; pointer-events:none;
-               display:none; line-height:1.6; }}
-  .legend {{ display:flex; align-items:center; gap:8px; margin-top:10px; font-size:.8rem; }}
-  .grad {{ width:180px; height:14px; border-radius:4px;
-           background:linear-gradient(to right,rgb(0,0,255),rgb(255,255,0),rgb(255,0,0)); }}
-  .stats {{ margin-top:14px; font-size:.8rem; color:#aaa; line-height:1.8; }}
-  .mat-badge {{ display:inline-block; padding:2px 8px; border-radius:10px;
-                font-size:.75rem; margin-right:6px; }}
-  .T0 {{ background:#1a6b8a; }}
-  .T1 {{ background:#8a3a1a; }}
+  *, *::before, *::after {{ box-sizing: border-box; }}
+  html, body {{ margin:0; padding:0; height:100%; overflow:hidden;
+                font-family:'Segoe UI',system-ui,sans-serif;
+                background:#ffffff; color:#1e293b; }}
+  #shell {{ display:flex; flex-direction:column; height:100vh; padding:10px 14px 6px; }}
+  h1 {{ font-size:1.05rem; font-weight:700; color:#1e40af; margin:0 0 2px; }}
+  .subtitle {{ color:#64748b; font-size:.72rem; margin-bottom:8px; }}
+  .controls {{ display:flex; gap:12px; align-items:center; margin-bottom:8px;
+               flex-wrap:wrap; padding:6px 10px; background:#f1f5f9;
+               border-radius:6px; border:1px solid #e2e8f0; }}
+  label {{ font-size:.78rem; color:#475569; display:flex; align-items:center; gap:5px; }}
+  input[type=range] {{ width:140px; accent-color:#2563eb; }}
+  select {{ background:#fff; color:#1e293b; border:1px solid #cbd5e1;
+            border-radius:4px; padding:2px 6px; font-size:.78rem; }}
+  #canvasWrap {{ flex:1; position:relative; min-height:0; }}
+  canvas {{ width:100%; height:100%; display:block; border-radius:6px;
+            border:1px solid #e2e8f0; background:#f8fafc; cursor:crosshair; }}
+  #tooltip {{ position:fixed; background:rgba(255,255,255,.97); border:1px solid #cbd5e1;
+               padding:9px 13px; border-radius:8px; font-size:.76rem; pointer-events:none;
+               display:none; line-height:1.8; min-width:190px;
+               box-shadow:0 4px 16px rgba(0,0,0,.12); color:#1e293b; }}
+  .legend {{ display:flex; align-items:center; gap:8px; margin-top:5px; font-size:.73rem; color:#64748b; flex-wrap:wrap; }}
+  .grad {{ width:180px; height:12px; border-radius:3px; flex-shrink:0;
+           background:linear-gradient(to right,#1a3aff,#00bcd4,#00c853,#ffd600,#ff4422); }}
+  .mat-badge {{ display:inline-block; padding:1px 7px; border-radius:8px; font-size:.7rem; margin-right:4px; }}
+  .T0 {{ background:#dbeafe; color:#1e40af; }}
+  .T1 {{ background:#fce7f3; color:#9d174d; }}
 </style>
 </head>
 <body>
-<h1>🌡️ Meltio DED Heat Map — {self.user['part_name']}</h1>
-<div class="subtitle">Analysis date: {datetime.now().strftime('%Y-%m-%d %H:%M')} &nbsp;|&nbsp;
-  Heat index = avg(V1,V2) / thermal conductivity &nbsp;|&nbsp;
-  Deposition waypoints: {len(self.thermal_data)}</div>
+<div id="shell">
+<h1>🌡️ Thermal Heat Map — {self.user['part_name']}</h1>
+<div class="subtitle">
+  {datetime.now().strftime('%Y-%m-%d %H:%M')} &nbsp;·&nbsp;
+  {len(self.thermal_data)} waypoints &nbsp;·&nbsp;
+  Eagar-Tsai melt pool + Rykalin thermal
+</div>
 
 <div class="controls">
   <label>Layer:
-    <input type="range" id="layerSlider" min="0" max="{len(layers)-1}" value="0" oninput="drawLayer(+this.value)">
-    <span id="layerLabel"></span>
+    <input type="range" id="layerSlider" min="0" max="{len(sampled_layers)-1}" value="0" oninput="drawLayer(+this.value)">
+    <span id="layerLabel" style="min-width:72px;display:inline-block;font-weight:600;color:#1e293b"></span>
   </label>
-  <label><input type="checkbox" id="showAll" onchange="toggleAll()"> Show all layers</label>
-  <label>Point size:
-    <input type="range" id="ptSize" min="2" max="14" value="5" oninput="drawLayer(currentLayer)">
+  <label><input type="checkbox" id="showAll" onchange="toggleAll()"> All layers</label>
+  <label>Width:
+    <input type="range" id="lineWidth" min="1" max="10" value="3" oninput="drawLayer(currentLayer)">
+    <span id="lwLabel">3</span>px
   </label>
-  <label><input type="checkbox" id="showDots" onchange="drawLayer(currentLayer)"> Show dots</label>
-  <label><input type="checkbox" id="showBoundaries" checked onchange="drawLayer(currentLayer)"> Show seam points</label>
+  <label>Color:
+    <select id="colorMode" onchange="drawLayer(currentLayer)">
+      <option value="temp">Temperature</option>
+      <option value="ved">VED</option>
+      <option value="speed">Speed</option>
+      <option value="curv">Curvature</option>
+    </select>
+  </label>
+  <label><input type="checkbox" id="showDots" onchange="drawLayer(currentLayer)"> Dots</label>
+  <label><input type="checkbox" id="showBoundaries" checked onchange="drawLayer(currentLayer)"> Seam</label>
+  <label><input type="checkbox" id="showRisk" checked onchange="drawLayer(currentLayer)"> Risk</label>
+  <span style="font-size:.72rem;color:#94a3b8;margin-left:auto">← → keys to navigate</span>
 </div>
 
-<canvas id="cv" width="900" height="600"></canvas>
-<div id="tooltip"></div>
+<div id="canvasWrap">
+  <canvas id="cv"></canvas>
+  <div id="tooltip"></div>
+</div>
 
 <div class="legend">
-  <span style="color:#00f">{t_min:.0f}°C</span>
+  <span class="grad-label">{t_min:.0f}°C</span>
   <div class="grad"></div>
-  <span style="color:#f00">{t_max:.0f}°C</span>
-  &nbsp;&nbsp;
-  {''.join(f'<span class="mat-badge {f}">{f} = {self.user.get("material_"+f,"?")}</span>' for f in ["T0","T1"] if f in self.materials_found)}
+  <span class="grad-label">{t_max:.0f}°C</span>
+  &nbsp;
+  <span style="color:#e53e3e">■</span> <span class="grad-label">LOF/Stub</span> &nbsp;
+  <span style="color:#dd6b20">●</span> <span class="grad-label">Keyhole</span> &nbsp;
+  <span style="color:#276749">◆</span> <span class="grad-label">Seam start</span> &nbsp;
+  <span style="color:#6b46c1">■</span> <span class="grad-label">Seam end</span>
+  &nbsp;
+  {''.join(f'<span class="mat-badge {f}">{f}={self.user.get("material_"+f,"?")}</span>' for f in ["T0","T1"] if f in self.materials_found)}
+  <span class="grad-label" style="margin-left:auto">{len(sampled_layers)}/{len(layers)} layers shown · {self.user["laser_power"]}W · {self.user["layer_height"]}×{self.user["layer_width"]}mm</span>
 </div>
-
-<div class="stats">
-  <strong>Estimated Temperature:</strong> {t_min:.0f}°C – {t_max:.0f}°C &nbsp;|&nbsp;
-  <strong>Avg:</strong> {sum(temps)/len(temps):.0f}°C<br>
-  <strong>Wire ⌀:</strong> {self.user['wire_diameter']} mm &nbsp;|&nbsp;
-  <strong>Layer H×W:</strong> {self.user['layer_height']} × {self.user['layer_width']} mm &nbsp;|&nbsp;
-  <strong>Laser:</strong> {self.user['laser_power']} W &nbsp;|&nbsp;
-  <strong>Model:</strong> Rykalin + 15 L/min Ar (h=35 W/m²K)
-</div>
+</div><!-- /shell -->
 
 <script>
 const LAYERS = {layers_js};
@@ -1046,100 +1239,444 @@ const MARKERS = {markers_js};
 let currentLayer = 0;
 let showAll = false;
 
-const cv = document.getElementById('cv');
-const ctx = cv.getContext('2d');
-const slider = document.getElementById('layerSlider');
+const cv      = document.getElementById('cv');
+const ctx     = cv.getContext('2d');
+const wrap    = document.getElementById('canvasWrap');
+const slider  = document.getElementById('layerSlider');
 const tooltip = document.getElementById('tooltip');
 
-// Compute bounding box across all points
+// ── Resize ────────────────────────────────────────────────────────────────
+function resizeCanvas() {{
+  const r = wrap.getBoundingClientRect();
+  if (r.width > 0 && r.height > 0) {{
+    cv.width  = Math.floor(r.width);
+    cv.height = Math.floor(r.height);
+    drawLayer(currentLayer);
+  }}
+}}
+window.addEventListener('resize', resizeCanvas);
+
+// ── Data ranges ───────────────────────────────────────────────────────────
 const allPts = LAYERS.flat();
 const xs = allPts.map(p=>p.x), ys = allPts.map(p=>p.y);
+const zs3d = allPts.map(p=>p.z||0);
 const xMin=Math.min(...xs), xMax=Math.max(...xs);
 const yMin=Math.min(...ys), yMax=Math.max(...ys);
-const pad = 40;
+const zMin=Math.min(...zs3d), zMax=Math.max(...zs3d);
+const vedMin  = Math.min(...allPts.map(p=>p.ved||0));
+const vedMax  = Math.max(...allPts.map(p=>p.ved||0)) || 1;
+const spdMin  = Math.min(...allPts.map(p=>p.speed||0));
+const spdMax  = Math.max(...allPts.map(p=>p.speed||0)) || 1;
+const cvMax   = Math.max(...allPts.map(p=>p.cv||0)) || 1;
+const pad = 36;
 
-function toCanvas(x, y) {{
-  const cx = pad + (x-xMin)/(xMax-xMin+1e-9)*(cv.width-2*pad);
-  const cy = cv.height - pad - (y-yMin)/(yMax-yMin+1e-9)*(cv.height-2*pad);
-  return [cx, cy];
+// ── Quaternion helpers ────────────────────────────────────────────────────
+function quatFromAxisAngle(ax, ay, az, angle) {{
+  const s = Math.sin(angle/2);
+  return [Math.cos(angle/2), ax*s, ay*s, az*s];
+}}
+function quatMul(a, b) {{
+  const [aw,ax,ay,az] = a, [bw,bx,by,bz] = b;
+  return [
+    aw*bw - ax*bx - ay*by - az*bz,
+    aw*bx + ax*bw + ay*bz - az*by,
+    aw*by - ax*bz + ay*bw + az*bx,
+    aw*bz + ax*by - ay*bx + az*bw,
+  ];
+}}
+function quatNorm(q) {{
+  const n = Math.sqrt(q[0]*q[0]+q[1]*q[1]+q[2]*q[2]+q[3]*q[3]);
+  return n > 0 ? q.map(v=>v/n) : [1,0,0,0];
+}}
+function rotateVec(q, v) {{
+  const [w,qx,qy,qz] = q, [vx,vy,vz] = v;
+  const tx = 2*(qy*vz - qz*vy);
+  const ty = 2*(qz*vx - qx*vz);
+  const tz = 2*(qx*vy - qy*vx);
+  return [vx+w*tx+qy*tz-qz*ty, vy+w*ty+qz*tx-qx*tz, vz+w*tz+qx*ty-qy*tx];
+}}
+
+// ── 3D state ──────────────────────────────────────────────────────────────
+// Default: isometric-ish view — tilted 25° around X, 20° around Z
+let quat = quatNorm(quatMul(quatFromAxisAngle(1,0,0,-0.44),
+                             quatFromAxisAngle(0,0,1, 0.35)));
+let zoom = 1.0;
+let panX = 0, panY = 0;
+
+// Centre + scale of 3D data
+const cx3 = (xMin+xMax)/2, cy3 = (yMin+yMax)/2, cz3 = (zMin+zMax)/2;
+const span3 = Math.max(xMax-xMin, yMax-yMin, zMax-zMin, 1);
+
+// ── Project 3D → canvas 2D (perspective) ─────────────────────────────────
+const FOV = 2.8;
+function toCanvas(x, y, z) {{
+  const nx = (x-cx3)/span3, ny = (y-cy3)/span3, nz = ((z||0)-cz3)/span3;
+  const [rx,ry,rz] = rotateVec(quat, [nx, ny, nz]);
+  const s = zoom / (1 + rz/FOV);
+  const W = (cv.width -2*pad)*0.48, H = (cv.height-2*pad)*0.48;
+  return [cv.width/2  + panX + rx*s*W,
+          cv.height/2 + panY - ry*s*H,
+          rz];
+}}
+
+// ── Inertia ───────────────────────────────────────────────────────────────
+let velX = 0, velY = 0;   // angular velocity (rad/frame)
+let animId = null;
+function applyInertia() {{
+  if (Math.hypot(velX, velY) < 0.0003) {{ velX = velY = 0; animId = null; return; }}
+  velX *= 0.88; velY *= 0.88;
+  const speed = Math.hypot(velX, velY);
+  // Rotate around screen-space axes: horizontal drag → world Y, vertical → world X
+  const worldY = rotateVec([quat[0],-quat[1],-quat[2],-quat[3]], [0,1,0]);
+  const worldX = rotateVec([quat[0],-quat[1],-quat[2],-quat[3]], [1,0,0]);
+  const dqH = quatFromAxisAngle(...worldY, velY);
+  const dqV = quatFromAxisAngle(...worldX, velX);
+  quat = quatNorm(quatMul(dqH, quatMul(dqV, quat)));
+  drawLayer(currentLayer);
+  animId = requestAnimationFrame(applyInertia);
+}}
+
+// ── Mouse drag: rotate (left) or pan (middle/Ctrl) ────────────────────────
+let drag = false, dragX = 0, dragY = 0, dragBtn = 0;
+cv.style.cursor = 'grab';
+
+cv.addEventListener('mousedown', e => {{
+  if (animId) {{ cancelAnimationFrame(animId); animId=null; }}
+  drag=true; dragX=e.clientX; dragY=e.clientY; dragBtn=e.button;
+  cv.style.cursor = (dragBtn===1||e.ctrlKey) ? 'move' : 'grabbing';
+  tooltip.style.display='none';
+  e.preventDefault();
+}});
+window.addEventListener('mouseup', () => {{
+  if (drag && dragBtn!==1 && !dragCtrl) {{
+    // kick off inertia when releasing rotate drag
+    if (!animId && Math.hypot(velX,velY)>0.0005)
+      animId = requestAnimationFrame(applyInertia);
+  }}
+  drag=false; cv.style.cursor='grab';
+}});
+let dragCtrl=false;
+window.addEventListener('mousemove', e => {{
+  if (!drag) return;
+  const dx = e.clientX-dragX, dy = e.clientY-dragY;
+  dragX=e.clientX; dragY=e.clientY;
+  dragCtrl = e.ctrlKey;
+
+  if (dragBtn===1 || dragCtrl) {{
+    // Middle-click or Ctrl → pan
+    panX+=dx; panY+=dy;
+  }} else {{
+    // Left drag → arcball-style rotation
+    // Horizontal mouse → rotate around screen-up (world Y in camera space)
+    // Vertical mouse   → rotate around screen-right (world X in camera space)
+    const sens = 2.8 / Math.min(cv.width, cv.height);
+    const ax = dy * sens;   // pitch
+    const ay = dx * sens;   // yaw
+    velX = ax * 0.4;
+    velY = ay * 0.4;
+    // World-space axes so rotation stays intuitive at any orientation
+    const worldUp    = rotateVec([quat[0],-quat[1],-quat[2],-quat[3]], [0,1,0]);
+    const worldRight = rotateVec([quat[0],-quat[1],-quat[2],-quat[3]], [1,0,0]);
+    const dqYaw   = quatFromAxisAngle(...worldUp,    ay);
+    const dqPitch = quatFromAxisAngle(...worldRight, ax);
+    quat = quatNorm(quatMul(dqYaw, quatMul(dqPitch, quat)));
+  }}
+  drawLayer(currentLayer);
+}});
+
+// ── Scroll wheel: zoom toward cursor ─────────────────────────────────────
+cv.addEventListener('wheel', e => {{
+  e.preventDefault();
+  const rect = cv.getBoundingClientRect();
+  const mx = e.clientX-rect.left, my = e.clientY-rect.top;
+  const factor = e.deltaY<0 ? 1.13 : 0.885;
+  // Shift pan so the point under the cursor stays fixed
+  panX = mx + (panX-mx)*factor;
+  panY = my + (panY-my)*factor;
+  zoom = Math.max(0.12, Math.min(zoom*factor, 12.0));
+  drawLayer(currentLayer);
+}}, {{passive:false}});
+
+// ── Right-click drag → pan (alternative to Ctrl+drag) ────────────────────
+cv.addEventListener('contextmenu', e => e.preventDefault());
+
+// ── Touch: 1 finger = rotate, 2 fingers = pinch-zoom + pan ───────────────
+let touchX=0, touchY=0, touchDist=0, touchMidX=0, touchMidY=0;
+cv.addEventListener('touchstart', e => {{
+  if (animId) {{ cancelAnimationFrame(animId); animId=null; }}
+  if (e.touches.length===1) {{
+    touchX=e.touches[0].clientX; touchY=e.touches[0].clientY;
+  }} else if (e.touches.length===2) {{
+    const dx=e.touches[0].clientX-e.touches[1].clientX;
+    const dy=e.touches[0].clientY-e.touches[1].clientY;
+    touchDist=Math.hypot(dx,dy);
+    touchMidX=(e.touches[0].clientX+e.touches[1].clientX)/2;
+    touchMidY=(e.touches[0].clientY+e.touches[1].clientY)/2;
+  }}
+}}, {{passive:true}});
+cv.addEventListener('touchmove', e => {{
+  e.preventDefault();
+  if (e.touches.length === 1) {{
+    const dx = e.touches[0].clientX - touchX;
+    const dy = e.touches[0].clientY - touchY;
+    touchX = e.touches[0].clientX; touchY = e.touches[0].clientY;
+    const dqX = quatFromEuler(-dy/cv.height*Math.PI, 0, 0);
+    const dqY = quatFromEuler(0, dx/cv.width*Math.PI, 0);
+    // 1-finger rotate (world-space arcball)
+    const sens = 2.8 / Math.min(cv.width, cv.height);
+    const ax = (e.touches[0].clientY-touchY)*sens;
+    const ay = (e.touches[0].clientX-touchX)*sens;
+    touchX=e.touches[0].clientX; touchY=e.touches[0].clientY;
+    const wUp    = rotateVec([quat[0],-quat[1],-quat[2],-quat[3]], [0,1,0]);
+    const wRight = rotateVec([quat[0],-quat[1],-quat[2],-quat[3]], [1,0,0]);
+    quat = quatNorm(quatMul(quatFromAxisAngle(...wUp,ay),
+                             quatMul(quatFromAxisAngle(...wRight,ax), quat)));
+  }} else if (e.touches.length===2) {{
+    const dx=e.touches[0].clientX-e.touches[1].clientX;
+    const dy=e.touches[0].clientY-e.touches[1].clientY;
+    const newDist=Math.hypot(dx,dy);
+    const newMidX=(e.touches[0].clientX+e.touches[1].clientX)/2;
+    const newMidY=(e.touches[0].clientY+e.touches[1].clientY)/2;
+    if (touchDist>0) {{
+      const factor = newDist/touchDist;
+      // Zoom toward pinch midpoint
+      panX = newMidX + (panX-touchMidX)*factor + (newMidX-touchMidX);
+      panY = newMidY + (panY-touchMidY)*factor + (newMidY-touchMidY);
+      zoom = Math.max(0.12, Math.min(zoom*factor, 12.0));
+    }}
+    touchDist=newDist; touchMidX=newMidX; touchMidY=newMidY;
+  }}
+  drawLayer(currentLayer);
+}}, {{passive:false}});
+
+// ── Double-click / double-tap: reset all ──────────────────────────────────
+function resetView() {{
+  if (animId) {{ cancelAnimationFrame(animId); animId=null; }}
+  velX=0; velY=0;
+  quat = quatNorm(quatMul(quatFromAxisAngle(1,0,0,-0.44),
+                           quatFromAxisAngle(0,0,1, 0.35)));
+  zoom=1.0; panX=0; panY=0;
+  drawLayer(currentLayer);
+}}
+cv.addEventListener('dblclick', resetView);
+
+// ── View preset buttons (Top / Front / Side) ──────────────────────────────
+// Injected as overlay buttons inside canvasWrap
+(function(){{
+  const btns = [
+    ['T', 'Top',   quatFromAxisAngle(1,0,0,-Math.PI/2)],
+    ['F', 'Front', [1,0,0,0]],
+    ['S', 'Side',  quatFromAxisAngle(0,1,0, Math.PI/2)],
+    ['I', 'Iso',   quatNorm(quatMul(quatFromAxisAngle(1,0,0,-0.44),
+                                     quatFromAxisAngle(0,0,1, 0.35)))],
+  ];
+  const bar = document.createElement('div');
+  bar.style.cssText='position:absolute;top:6px;right:8px;display:flex;gap:4px;z-index:10';
+  btns.forEach(([label,title,q])=>{{
+    const b=document.createElement('button');
+    b.textContent=label; b.title=title;
+    b.style.cssText='width:26px;height:26px;border:1px solid #cbd5e1;border-radius:5px;'+
+      'background:rgba(255,255,255,0.85);color:#475569;font-size:.72rem;font-weight:700;'+
+      'cursor:pointer;line-height:1;padding:0;backdrop-filter:blur(4px)';
+    b.addEventListener('click',()=>{{
+      if (animId) {{ cancelAnimationFrame(animId); animId=null; }}
+      velX=0; velY=0; quat=quatNorm(q); zoom=1.0; panX=0; panY=0;
+      drawLayer(currentLayer);
+    }});
+    bar.appendChild(b);
+  }});
+  wrap.style.position='relative';
+  wrap.appendChild(bar);
+}})();
+
+// Map a 0-1 fraction to a colour on the blue→cyan→green→yellow→red spectrum
+function fracToColor(t) {{
+  const stops = [
+    [0.00, [26,  58, 255]],
+    [0.25, [0,  212, 255]],
+    [0.50, [0,  255, 136]],
+    [0.75, [255,204,  0]],
+    [1.00, [255, 68,  34]],
+  ];
+  for (let i=1; i<stops.length; i++) {{
+    if (t <= stops[i][0]) {{
+      const lo=stops[i-1], hi=stops[i];
+      const f=(t-lo[0])/(hi[0]-lo[0]);
+      const r=lo[1].map((v,j)=>Math.round(v+(hi[1][j]-v)*f));
+      return `rgb(${{r[0]}},${{r[1]}},${{r[2]}})`;
+    }}
+  }}
+  return 'rgb(255,68,34)';
+}}
+
+function ptColor(p) {{
+  const mode = document.getElementById('colorMode').value;
+  if (mode==='ved')   return fracToColor(Math.max(0,Math.min(1,(p.ved-vedMin)/(vedMax-vedMin+1e-9))));
+  if (mode==='speed') return fracToColor(Math.max(0,Math.min(1,(p.speed-spdMin)/(spdMax-spdMin+1e-9))));
+  if (mode==='curv')  return fracToColor(Math.max(0,Math.min(1,p.cv/Math.max(cvMax,1))));
+  return p.color; // default: temperature
 }}
 
 function drawLayer(idx) {{
   currentLayer = idx;
-  document.getElementById('layerLabel').textContent = 'Layer ' + LAYER_NUMS[idx];
+  const lwEl = document.getElementById('lineWidth');
+  const lw   = +lwEl.value;
+  document.getElementById('lwLabel').textContent = lw;
+  document.getElementById('layerLabel').textContent = ' Layer ' + LAYER_NUMS[idx];
   slider.value = idx;
-  ctx.clearRect(0,0,cv.width,cv.height);
-  const pts = showAll ? LAYERS.flat() : LAYERS[idx];
-  const baseR = +document.getElementById('ptSize').value;
-  const showDots = document.getElementById('showDots').checked;
-  const showBoundaries = document.getElementById('showBoundaries').checked;
 
-  // Draw path lines first
-  if (pts.length > 1) {{
+  // White background fill
+  ctx.fillStyle='#f8fafc';
+  ctx.fillRect(0,0,cv.width,cv.height);
+
+  // Subtle light grid
+  ctx.strokeStyle='rgba(100,116,139,0.10)';
+  ctx.lineWidth=1;
+  for(let gx=pad;gx<cv.width-pad;gx+=(cv.width-2*pad)/8){{ctx.beginPath();ctx.moveTo(gx,pad);ctx.lineTo(gx,cv.height-pad);ctx.stroke();}}
+  for(let gy=pad;gy<cv.height-pad;gy+=(cv.height-2*pad)/6){{ctx.beginPath();ctx.moveTo(pad,gy);ctx.lineTo(cv.width-pad,gy);ctx.stroke();}}
+
+  const layerSets = showAll ? LAYERS : [LAYERS[idx]];
+  const showDots  = document.getElementById('showDots').checked;
+  const showRisk  = document.getElementById('showRisk').checked;
+
+  layerSets.forEach((pts, li) => {{
+    if (!pts || pts.length < 2) return;
+
+    // ── Continuous gradient line (3D projected) ──────────────────────────
+    ctx.lineCap  = 'round';
+    ctx.lineJoin = 'round';
     for (let i=1; i<pts.length; i++) {{
-      const [ax,ay] = toCanvas(pts[i-1].x, pts[i-1].y);
-      const [bx,by] = toCanvas(pts[i].x,   pts[i].y);
+      const p0=pts[i-1], p1=pts[i];
+      const [ax,ay,az] = toCanvas(p0.x, p0.y, p0.z||0);
+      const [bx,by,bz] = toCanvas(p1.x, p1.y, p1.z||0);
+
+      if (Math.hypot(bx-ax,by-ay) < 0.3) continue;
+
+      // Depth-fade: back points slightly lighter, front points full colour
+      const depthAlpha = showAll ? Math.max(0.15, 0.55 - (az+bz)/2 * 0.25) : 1.0;
       const grad = ctx.createLinearGradient(ax,ay,bx,by);
-      grad.addColorStop(0, pts[i-1].color);
-      grad.addColorStop(1, pts[i].color);
+      if (showAll) {{
+        grad.addColorStop(0, `rgba(${{hexToRgb(ptColor(p0))}},${{depthAlpha.toFixed(2)}})`);
+        grad.addColorStop(1, `rgba(${{hexToRgb(ptColor(p1))}},${{depthAlpha.toFixed(2)}})`);
+      }} else {{
+        grad.addColorStop(0, ptColor(p0));
+        grad.addColorStop(1, ptColor(p1));
+      }}
       ctx.beginPath();
       ctx.moveTo(ax,ay);
       ctx.lineTo(bx,by);
       ctx.strokeStyle = grad;
-      ctx.lineWidth = 2;
+      ctx.lineWidth   = lw;
       ctx.stroke();
     }}
-  }}
 
-  // Draw points on top, sized by curvature (only if showDots is checked)
-  if (showDots) {{
-    pts.forEach(p => {{
-      const [cx,cy] = toCanvas(p.x, p.y);
-      const r = baseR + Math.min(p.cv/90, 1) * baseR * 1.5;
-      ctx.beginPath();
-      ctx.arc(cx, cy, r, 0, Math.PI*2);
-      ctx.fillStyle = p.color;
-      ctx.fill();
-      if (p.cv > 30) {{  // hotspot ring
+    // ── Risk overlay ──────────────────────────────────────────────────────
+    if (showRisk) {{
+      pts.forEach(p => {{
+        if (!p.lof && !p.kh && !p.stub) return;
+        const [cx,cy] = toCanvas(p.x, p.y, p.z||0);
+        const riskColor = p.stub ? 'rgba(255,30,30,0.55)'
+                        : p.lof  ? 'rgba(255,80,0,0.45)'
+                                 : 'rgba(255,165,0,0.40)';
         ctx.beginPath();
-        ctx.arc(cx, cy, r+2, 0, Math.PI*2);
-        ctx.strokeStyle = 'rgba(255,255,255,0.6)';
-        ctx.lineWidth = 1;
-        ctx.stroke();
-      }}
-    }});
-  }}
-
-  // Draw seam start/end markers
-  if (showBoundaries) {{
-    MARKERS.forEach(marker => {{
-      if (showAll || LAYER_NUMS[idx] === marker.layer) {{
-        // Seam START — filled diamond, colour by temperature risk
-        const [sx, sy] = toCanvas(marker.start_x, marker.start_y);
-        const tc = marker.start_tc || 0;
-        const seamColor = tc > 1190 ? '#ff3344' : tc > 850 ? '#ffaa00' : '#00ff88';
-        ctx.beginPath();
-        ctx.moveTo(sx,    sy - 8);
-        ctx.lineTo(sx + 8, sy);
-        ctx.lineTo(sx,    sy + 8);
-        ctx.lineTo(sx - 8, sy);
-        ctx.closePath();
-        ctx.fillStyle   = seamColor;
+        ctx.arc(cx, cy, lw*2.5, 0, Math.PI*2);
+        ctx.fillStyle = riskColor;
         ctx.fill();
-        ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth   = 1.5;
-        ctx.stroke();
+      }});
+    }}
 
-        // Seam END — filled square (smaller)
-        const [ex, ey] = toCanvas(marker.stop_x, marker.stop_y);
-        ctx.fillStyle   = 'rgba(180,50,255,0.85)';
-        ctx.fillRect(ex - 5, ey - 5, 10, 10);
-        ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth   = 1;
-        ctx.strokeRect(ex - 5, ey - 5, 10, 10);
-      }}
+    // ── Optional dots ─────────────────────────────────────────────────────
+    if (showDots) {{
+      pts.forEach(p => {{
+        const [cx,cy] = toCanvas(p.x, p.y, p.z||0);
+        const r = lw * 0.9 + Math.min(p.cv/90,1)*lw*1.2;
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI*2);
+        ctx.fillStyle = ptColor(p);
+        ctx.fill();
+        if (p.cv > 30) {{
+          ctx.beginPath();
+          ctx.arc(cx, cy, r+2, 0, Math.PI*2);
+          ctx.strokeStyle='rgba(255,255,255,0.5)';
+          ctx.lineWidth=1;
+          ctx.stroke();
+        }}
+      }});
+    }}
+  }});
+
+  // ── Seam markers (3D projected) ──────────────────────────────────────
+  if (document.getElementById('showBoundaries').checked) {{
+    MARKERS.forEach(marker => {{
+      if (!showAll && LAYER_NUMS[idx] !== marker.layer) return;
+      const [sx,sy] = toCanvas(marker.start_x, marker.start_y, marker.start_z||0);
+      const tc = marker.start_tc || 0;
+      const seamColor = tc > 1190 ? '#ff3344' : tc > 850 ? '#ffaa00' : '#00ff88';
+      ctx.beginPath();
+      ctx.moveTo(sx, sy-9); ctx.lineTo(sx+9, sy);
+      ctx.lineTo(sx, sy+9); ctx.lineTo(sx-9, sy);
+      ctx.closePath();
+      ctx.fillStyle=seamColor; ctx.fill();
+      ctx.strokeStyle='#fff'; ctx.lineWidth=1.5; ctx.stroke();
+      const [ex,ey] = toCanvas(marker.stop_x, marker.stop_y, marker.stop_z||0);
+      ctx.fillStyle='rgba(180,50,255,0.9)';
+      ctx.fillRect(ex-5,ey-5,10,10);
+      ctx.strokeStyle='#fff'; ctx.lineWidth=1;
+      ctx.strokeRect(ex-5,ey-5,10,10);
     }});
   }}
+
+  // ── 3D Axis gizmo (bottom-left corner) ──────────────────────────────────
+  const gx = pad + 30, gy = cv.height - pad - 30, gLen = 28;
+  const axes = [
+    [[1,0,0], '#e53e3e', 'X'],
+    [[0,1,0], '#276749', 'Y'],
+    [[0,0,1], '#2563eb', 'Z'],
+  ];
+  axes.forEach(([vec, col, label]) => {{
+    const [ex,ey] = toCanvas(
+      cx3 + vec[0]*span3*0.55,
+      cy3 + vec[1]*span3*0.55,
+      cz3 + vec[2]*span3*0.55
+    );
+    // Convert to gizmo-local coords
+    const [ox,oy] = toCanvas(cx3, cy3, cz3);
+    const dx = ex-ox, dy = ey-oy;
+    const len = Math.hypot(dx,dy) || 1;
+    const nx = dx/len*gLen, ny = dy/len*gLen;
+    ctx.beginPath();
+    ctx.moveTo(gx, gy);
+    ctx.lineTo(gx+nx, gy+ny);
+    ctx.strokeStyle=col; ctx.lineWidth=2.5; ctx.stroke();
+    ctx.fillStyle=col; ctx.font='bold 11px monospace';
+    ctx.fillText(label, gx+nx*1.25-4, gy+ny*1.25+4);
+  }});
+  // Origin dot
+  ctx.beginPath(); ctx.arc(gx,gy,4,0,Math.PI*2);
+  ctx.fillStyle='rgba(71,85,105,0.6)'; ctx.fill();
+
+  // Scale + drag hint (bottom-right)
+  const xSpan = (xMax - xMin), ySpan = (yMax - yMin), zSpan = (zMax - zMin);
+  ctx.fillStyle='rgba(71,85,105,0.65)'; ctx.font='9px monospace';
+  ctx.textAlign='right';
+  ctx.fillText(`${{xSpan.toFixed(0)}}×${{ySpan.toFixed(0)}}×${{zSpan.toFixed(0)}} mm`, cv.width-pad, cv.height-14);
+  ctx.fillText(`drag=rotate · scroll=zoom(${{zoom.toFixed(1)}}x) · mid/Ctrl=pan · dbl-click=reset`, cv.width-pad, cv.height-4);
+  ctx.textAlign='left';
+
+  // Layer info (top-left)
+  const pts = showAll ? LAYERS.flat() : LAYERS[idx];
+  const layerInfo = showAll
+    ? 'All ' + LAYERS.length + ' layers (' + pts.length + ' pts)'
+    : 'Layer ' + LAYER_NUMS[idx] + ' / ' + LAYER_NUMS[LAYERS.length-1] + '  (' + pts.length + ' pts)';
+  ctx.fillStyle='rgba(30,64,175,0.70)';
+  ctx.font='bold 12px monospace';
+  ctx.fillText(layerInfo, 8, 18);
+}}
+
+// Helper: extract r,g,b from any css color string
+function hexToRgb(color) {{
+  const m = color.match(/\d+/g);
+  return m ? m.join(',') : '200,200,200';
 }}
 
 function toggleAll() {{
@@ -1147,70 +1684,75 @@ function toggleAll() {{
   drawLayer(currentLayer);
 }}
 
-// Tooltip — checks seam markers first, then regular points
+// ── Keyboard navigation ───────────────────────────────────────────────────
+document.addEventListener('keydown', e => {{
+  if (e.key==='ArrowRight' || e.key==='ArrowUp')   drawLayer(Math.min(currentLayer+1, LAYERS.length-1));
+  if (e.key==='ArrowLeft'  || e.key==='ArrowDown')  drawLayer(Math.max(currentLayer-1, 0));
+}});
+
+// ── Tooltip ───────────────────────────────────────────────────────────────
 cv.addEventListener('mousemove', e => {{
   const rect = cv.getBoundingClientRect();
-  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
-  const r = +document.getElementById('ptSize').value + 4;
+  const mx = e.clientX-rect.left, my = e.clientY-rect.top;
+  const hitR = Math.max(6, +document.getElementById('lineWidth').value * 2);
 
-  // Check seam markers first (larger hit area = 12px)
-  const showBnd = document.getElementById('showBoundaries').checked;
-  if (showBnd) {{
-    const activeMarkers = showAll
-      ? MARKERS
-      : MARKERS.filter(m => m.layer === LAYER_NUMS[currentLayer]);
-    for (const m of activeMarkers) {{
-      const [sx, sy] = toCanvas(m.start_x, m.start_y);
-      if (Math.hypot(mx-sx, my-sy) < 12) {{
-        tooltip.style.display = 'block';
-        tooltip.style.left = (e.clientX+12)+'px';
-        tooltip.style.top  = (e.clientY+12)+'px';
-        const gapStr = m.gap_mm > 0 ? m.gap_mm.toFixed(2)+' mm' : '—';
-        const oeStr  = m.overlap_e > 0 ? m.overlap_e.toFixed(1)+' J/mm' : '—';
-        tooltip.innerHTML = `<b>🧵 SEAM START — Layer ${{m.layer}}</b><br>
-          <b>Temp:</b> <span style="color:#fab432;font-weight:bold">${{m.start_tc ? m.start_tc.toFixed(0) : '—'}} °C</span><br>
-          <b>Gap from prev layer:</b> ${{gapStr}}<br>
-          <b>Overlap energy:</b> ${{oeStr}}<br>
-          <b>X,Y:</b> ${{m.start_x.toFixed(2)}}, ${{m.start_y.toFixed(2)}}`;
+  // Seam markers first
+  if (document.getElementById('showBoundaries').checked) {{
+    const active = showAll ? MARKERS : MARKERS.filter(m=>m.layer===LAYER_NUMS[currentLayer]);
+    for (const m of active) {{
+      const [sx,sy]=toCanvas(m.start_x,m.start_y,m.start_z||0);
+      if (Math.hypot(mx-sx,my-sy)<13) {{
+        tooltip.style.display='block';
+        tooltip.style.left=(e.clientX+14)+'px'; tooltip.style.top=(e.clientY+14)+'px';
+        tooltip.innerHTML=`<b>🧵 SEAM START — Layer ${{m.layer}}</b><br>
+          Temp: <b style="color:#fab432">${{m.start_tc?.toFixed(0)||'—'}} °C</b><br>
+          Gap prev layer: ${{m.gap_mm>0?m.gap_mm.toFixed(2)+' mm':'—'}}<br>
+          Overlap energy: ${{m.overlap_e>0?m.overlap_e.toFixed(1)+' J/mm':'—'}}<br>
+          XY: ${{m.start_x.toFixed(2)}}, ${{m.start_y.toFixed(2)}}`;
         return;
       }}
-      const [ex, ey] = toCanvas(m.stop_x, m.stop_y);
-      if (Math.hypot(mx-ex, my-ey) < 10) {{
-        tooltip.style.display = 'block';
-        tooltip.style.left = (e.clientX+12)+'px';
-        tooltip.style.top  = (e.clientY+12)+'px';
-        tooltip.innerHTML = `<b>🧵 SEAM END — Layer ${{m.layer}}</b><br>
-          <b>Temp:</b> <span style="color:#c070ff;font-weight:bold">${{m.stop_tc ? m.stop_tc.toFixed(0) : '—'}} °C</span><br>
-          <b>X,Y:</b> ${{m.stop_x.toFixed(2)}}, ${{m.stop_y.toFixed(2)}}`;
+      const [ex,ey]=toCanvas(m.stop_x,m.stop_y,m.stop_z||0);
+      if (Math.hypot(mx-ex,my-ey)<10) {{
+        tooltip.style.display='block';
+        tooltip.style.left=(e.clientX+14)+'px'; tooltip.style.top=(e.clientY+14)+'px';
+        tooltip.innerHTML=`<b>🧵 SEAM END — Layer ${{m.layer}}</b><br>
+          Temp: <b style="color:#c070ff">${{m.stop_tc?.toFixed(0)||'—'}} °C</b><br>
+          XY: ${{m.stop_x.toFixed(2)}}, ${{m.stop_y.toFixed(2)}}`;
         return;
       }}
     }}
   }}
 
-  // Regular waypoint tooltip
+  // Nearest waypoint within hitR
   const pts = showAll ? LAYERS.flat() : LAYERS[currentLayer];
-  let found = null;
+  let best=null, bestD=hitR;
   for (const p of pts) {{
-    const [cx,cy] = toCanvas(p.x, p.y);
-    if (Math.hypot(mx-cx, my-cy) < r) {{ found = p; break; }}
+    const [cx,cy]=toCanvas(p.x,p.y,p.z||0);
+    const d=Math.hypot(mx-cx,my-cy);
+    if (d<bestD) {{ bestD=d; best=p; }}
   }}
-  if (found) {{
-    tooltip.style.display = 'block';
-    tooltip.style.left = (e.clientX+12)+'px';
-    tooltip.style.top  = (e.clientY+12)+'px';
-    tooltip.innerHTML = `<b>Material:</b> ${{found.material}}<br>
-      <b>Temp:</b> <span style="color:#fab432;font-weight:bold">${{found.tc}} °C</span><br>
-      <b>X,Y,Z:</b> ${{found.x}}, ${{found.y}}, ${{found.z}}<br>
-      <b>Speed:</b> ${{found.speed}} mm/s<br>
-      <b>Curvature:</b> ${{found.cv}}°${{found.cv>30?' ⚠️':''}}<br>
-      <b>Heat Index:</b> ${{found.hi.toFixed(4)}}`;
+  if (best) {{
+    tooltip.style.display='block';
+    tooltip.style.left=(e.clientX+14)+'px'; tooltip.style.top=(e.clientY+14)+'px';
+    const riskFlags = [
+      best.stub ? '<span style="color:#ff4422">⚠ STUBBING</span>' : '',
+      best.lof  ? '<span style="color:#ff8800">⚠ LOF</span>'      : '',
+      best.kh   ? '<span style="color:#ffcc00">⚠ KEYHOLE</span>'  : '',
+    ].filter(Boolean).join(' ');
+    tooltip.innerHTML=`<b style="color:#00d4ff">Layer point</b> ${{riskFlags?'— '+riskFlags:''}}<br>
+      Temp: <b style="color:#fab432">${{best.tc}} °C</b><br>
+      VED: <b>${{best.ved?.toFixed(1)||'—'}} J/mm³</b> &nbsp; Melt W: <b>${{best.mw?.toFixed(2)||'—'}} mm</b><br>
+      Speed: ${{best.speed}} mm/s &nbsp; Curv: ${{best.cv}}°${{best.cv>30?' ⚠':''}}<br>
+      Material: ${{best.material}}<br>
+      XYZ: ${{best.x}}, ${{best.y}}, ${{best.z}}`;
   }} else {{
-    tooltip.style.display = 'none';
+    tooltip.style.display='none';
   }}
 }});
-cv.addEventListener('mouseleave', ()=>tooltip.style.display='none');
+cv.addEventListener('mouseleave',()=>tooltip.style.display='none');
 
-drawLayer(0);
+// Initial size — must run after layout is computed
+requestAnimationFrame(() => {{ resizeCanvas(); drawLayer(0); }});
 </script>
 </body>
 </html>"""
@@ -1234,13 +1776,14 @@ drawLayer(0);
             "E_linear_Jmm", "absorption", "tau_cool_s",
             "V1_wire_mm3s", "V2_geometry_mm3s", "heat_index", "thermal_mass",
             # anomaly metrics
-            "VED", "norm_H", "melt_depth_mm", "melt_fuse_ratio",
+            "VED", "norm_H", "melt_depth_mm", "melt_width_mm", "melt_width_ratio", "melt_fuse_ratio",
             "G_Km", "R_ms", "cooling_rate_Ks", "G_over_R", "cracking_score",
-            "lof_risk", "keyhole_risk", "overheat_risk", "lof_depth_risk",
+            "lof_risk", "keyhole_risk", "stubbing_risk", "overheat_risk", "lof_depth_risk",
+            "ti_phase", "lath_width_um", "pdas_nm",
             # seam metrics
             "is_seam_start", "is_seam_end", "seam_gap_mm", "seam_overlap_energy", "seam_risk",
         ]
-        with open(out, "w", newline="") as f:
+        with open(out, "w", newline="", encoding="utf-8-sig") as f:
             w = csv.DictWriter(f, fieldnames=fieldnames)
             w.writeheader()
             for d in self.thermal_data:
@@ -1264,6 +1807,8 @@ drawLayer(0);
                     "VED":                 d.get("VED", ""),
                     "norm_H":              d.get("norm_H", ""),
                     "melt_depth_mm":       d.get("melt_depth_mm", ""),
+                    "melt_width_mm":       d.get("melt_width_mm", ""),
+                    "melt_width_ratio":    d.get("melt_width_ratio", ""),
                     "melt_fuse_ratio":     d.get("melt_fuse_ratio", ""),
                     "G_Km":                d.get("G_Km", ""),
                     "R_ms":                d.get("R_ms", ""),
@@ -1272,8 +1817,12 @@ drawLayer(0);
                     "cracking_score":      d.get("cracking_score", ""),
                     "lof_risk":            d.get("lof_risk", False),
                     "keyhole_risk":        d.get("keyhole_risk", False),
+                    "stubbing_risk":       d.get("stubbing_risk", False),
                     "overheat_risk":       d.get("overheat_risk", False),
                     "lof_depth_risk":      d.get("lof_depth_risk", False),
+                    "ti_phase":            d.get("ti_phase", ""),
+                    "lath_width_um":       d.get("lath_width_um", ""),
+                    "pdas_nm":             d.get("pdas_nm", ""),
                     # seam metrics
                     "is_seam_start":       d.get("is_seam_start", False),
                     "is_seam_end":         d.get("is_seam_end", False),
@@ -3377,13 +3926,24 @@ function initSensitivity() {{
         td = self.thermal_data
         n = len(td)
         lof       = sum(1 for d in td if d.get("lof_risk"))
+        stub      = sum(1 for d in td if d.get("stubbing_risk"))
         kh        = sum(1 for d in td if d.get("keyhole_risk"))
         oh        = sum(1 for d in td if d.get("overheat_risk"))
         ld        = sum(1 for d in td if d.get("lof_depth_risk"))
+        mw_narrow = sum(1 for d in td if d.get("melt_width_ratio", 1) < 0.7)
+        mw_wide   = sum(1 for d in td if d.get("melt_width_ratio", 1) > 2.0)
+        avg_mw    = sum(d.get("melt_width_mm", 0) for d in td) / n
         cr_vals   = [d.get("cracking_score", 0) for d in td]
         max_cr    = max(cr_vals)
         avg_ved   = sum(d.get("VED", 0) for d in td) / n
         avg_nh    = sum(d.get("norm_H", 0) for d in td) / n
+
+        # Ti-6Al-4V phase distribution (only if Ti material detected)
+        ti_phases = [d.get("ti_phase") for d in td if d.get("ti_phase")]
+        ti_phase_summary = ""
+        if ti_phases:
+            pc = Counter(ti_phases)
+            ti_phase_summary = " | ".join(f"{ph}: {cnt}" for ph, cnt in pc.most_common())
 
         def risk_icon(count, warn_thresh=1, high_thresh=10):
             if count == 0:    return "✅"
@@ -3396,13 +3956,23 @@ function initSensitivity() {{
             "| Anomaly Type | Count | % of WPs | Risk |",
             "|---|---|---|---|",
             f"| LOF — low VED (lack-of-fusion risk) | {lof} | {100*lof/n:.1f}% | {risk_icon(lof)} |",
-            f"| Keyhole porosity (ΔH/h_s > 25) | {kh} | {100*kh/n:.1f}% | {risk_icon(kh)} |",
+            f"| Wire stubbing risk (VED < 60% of LOF min) | {stub} | {100*stub/n:.1f}% | {risk_icon(stub)} |",
+            f"| Keyhole porosity (ΔH/h_s > 25, LPBF-calibrated*) | {kh} | {100*kh/n:.1f}% | {risk_icon(kh)} |",
             f"| Inter-layer overheating (T > 0.85 × T_melt) | {oh} | {100*oh/n:.1f}% | {risk_icon(oh,1,5)} |",
             f"| Melt depth insufficient (depth/h < 1.1) | {ld} | {100*ld/n:.1f}% | {risk_icon(ld)} |",
+            f"| Melt pool too narrow (E-T width < 70% bead) | {mw_narrow} | {100*mw_narrow/n:.1f}% | {risk_icon(mw_narrow)} |",
+            f"| Melt pool too wide (E-T width > 2× bead) | {mw_wide} | {100*mw_wide/n:.1f}% | {risk_icon(mw_wide)} |",
             f"| Max solidification cracking score | {max_cr:.3f} / 1.0 | — | {cr_icon} |",
             "",
-            f"**Avg VED:** {avg_ved:.1f} J/mm³ | **Avg ΔH/h_s:** {avg_nh:.2f}",
+            f"**Avg VED:** {avg_ved:.1f} J/mm³ | **Avg ΔH/h_s:** {avg_nh:.2f} | **Avg melt width (E-T):** {avg_mw:.2f} mm",
         ]
+        if ti_phase_summary:
+            lines.append(f"\n**Ti-6Al-4V phase prediction (from cooling rate):** {ti_phase_summary}")
+            lines.append("*Thresholds: >4 500 K/s = full α′ martensite | 410–4 500 K/s = onset | 20–410 K/s = Widmanstätten | <20 K/s = lamellar*")
+            lines.append("*(Ahmed & Rack 1998; Kenel et al. 2017 synchrotron)*")
+        lines.append("\n*ΔH/h_s > 25 keyhole threshold validated for LPBF (spot 50–300 µm). "
+                     "Wire-laser DED uses 1–3 mm spots → computed ΔH/h_s is structurally lower. "
+                     "Flag is indicative only. (Weaver et al. 2022, DOI 10.1016/j.jmapro.2021.10.053)*")
         return "\n".join(lines)
 
     def _microstructure_report(self) -> str:
@@ -3440,12 +4010,21 @@ function initSensitivity() {{
         td = self.thermal_data
         n  = len(td)
         lof   = sum(1 for d in td if d.get("lof_risk"))
+        stub  = sum(1 for d in td if d.get("stubbing_risk"))
         kh    = sum(1 for d in td if d.get("keyhole_risk"))
         oh    = sum(1 for d in td if d.get("overheat_risk"))
         ld    = sum(1 for d in td if d.get("lof_depth_risk"))
         max_cr = max((d.get("cracking_score", 0) for d in td), default=0)
 
         recs = []
+        if stub > 0:
+            pct = 100 * stub / n
+            recs.append(
+                f"🔴 **Wire Stubbing Risk ({stub} zones, {pct:.1f}%):** VED is critically low "
+                "(below 60% of LOF minimum). The wire will not melt fully and may stub against "
+                "the substrate. Increase laser power significantly or reduce wire feed speed. "
+                "(McLain et al. 2024, DOI 10.3390/ma17215311)"
+            )
         if lof > 0:
             pct = 100 * lof / n
             recs.append(
@@ -3457,8 +4036,10 @@ function initSensitivity() {{
             pct = 100 * kh / n
             recs.append(
                 f"🔴 **Keyhole Risk ({kh} zones, {pct:.1f}%):** Normalized enthalpy ΔH/h_s > 25. "
-                "The melt pool is absorbing excessive energy and may collapse into keyhole pores. "
-                "Reduce laser power or increase travel speed. Most likely at slow corners and path start/end points."
+                "Note: this threshold is validated for LPBF (small spot). For wire-laser DED with "
+                "1–3 mm beam spots, ΔH/h_s is structurally lower and this flag may be conservative. "
+                "If flagged: reduce laser power or increase travel speed. "
+                "(Weaver et al. 2022, DOI 10.1016/j.jmapro.2021.10.053)"
             )
         if oh > 0:
             pct = 100 * oh / n
@@ -3480,6 +4061,19 @@ function initSensitivity() {{
         elif max_cr > 0.4:
             recs.append(
                 f"⚠️  **Moderate Cracking Score ({max_cr:.3f}):** Monitor for hot-cracking especially at layer start/stop points and sharp corners."
+            )
+
+        # Interpass dwell warnings (computed during calculate_thermal_data)
+        dwell_warns = getattr(self, "_dwell_warnings", [])
+        if dwell_warns:
+            worst = max(dwell_warns, key=lambda x: x[3])
+            recs.append(
+                f"⏱️ **Interpass Dwell Insufficient ({len(dwell_warns)} layers):** "
+                f"Worst case: Layer {worst[0]} at {worst[1]:.0f}°C needs ~{worst[3]:.0f}s dwell "
+                f"to reach {worst[2]:.0f}°C target ({worst[4]}). "
+                "Increase min_layer_dwell or add active cooling between layers. "
+                "Excessive interpass temperature causes grain coarsening and residual stress accumulation. "
+                "(Eliseeva 2024, DOI 10.3390/ma17133307)"
             )
 
         if not recs:
@@ -3660,7 +4254,8 @@ Higher = more heat accumulation (low conductivity + high deposition rate)
 |---|---|---|
 | Volumetric Energy Density (VED) | A×P / (v×h×w) | Material-specific LOF/keyhole window |
 | Normalized Enthalpy (ΔH/h_s) | A×P / (h_s×√(π×α×v)×d^1.5) | < 6 = LOF risk · > 25 = keyhole |
-| Melt pool depth / layer height | 1D Rosenthal approx | < 1.1 = LOF depth risk |
+| Melt pool width (Eagar-Tsai 1983) | 2σ√(1 + A·P/(π·k·σ·ΔT)) × Pe-correction | Compared to nominal bead width |
+| Melt pool depth / layer height | Eagar-Tsai (semi-circular, capped by Rosenthal) | < 1.1 = LOF depth risk |
 | Cooling rate (dT/dt) | G × R [K/s] | > 10⁵ K/s + wide solidif. range → cracking |
 | Cracking score | (dT/dt / 10⁵) × (ΔT_solidif / 100) | 0–1 scale; > 0.7 = high risk |
 | G/R ratio | Thermal gradient / solidif. rate | High → columnar; Low → equiaxed grains |
