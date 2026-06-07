@@ -1,4 +1,4 @@
-# DED Analyser — Heat Map v1.0.3
+# DED Analyser — Heat Map v1.0.4
 
 Meltio wire-laser DED thermal analysis tool.  
 Analyses RAPID toolpath code, runs FEM thermal simulation, and visualises residual stress and heat distribution.
@@ -18,8 +18,8 @@ Download and install from [python.org](https://www.python.org/downloads/).
 During installation on Windows, check **"Add Python to PATH"**.
 
 **Step 2 — Download the release**  
-Download `DED-Analyser-Heat-map-v1.0.3.zip` from:  
-https://github.com/eyalBarMaimon/DED-Analyser/releases/tag/v1.0.3
+Download `DED-Analyser-Heat-map-v1.0.4.zip` from:  
+https://github.com/eyalBarMaimon/DED-Analyser/releases/tag/v1.0.4
 
 **Step 3 — Extract the ZIP**  
 Unzip to any folder on your computer.
@@ -122,7 +122,7 @@ Hastelloy C-276, Hastelloy X, Aluminium 6061, ER70S Mild Steel, Copper
 ---
 
 ## Version
-**v1.0.3** — 4 Jun 2026  
+**v1.0.4** — 8 Jun 2026  
 - Seam (layer start/end) detection and thermal analysis — shows seam XY drift, overlap energy, risk classification  
 - Full navigation sidebar: Live Dashboard, Post-Print Review, Offline Replay, Print History, Materials DB  
 - Stress Analysis section with residual stress and distortion prediction  
